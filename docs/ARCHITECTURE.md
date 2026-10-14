@@ -50,7 +50,7 @@ decision changes.
 | `:feature:library` | Android + Compose | exists | Home and Projects tabs (`LibraryViewModel`). |
 | `:feature:project` | Android + Compose | exists | Media import (pickers, probing, selection, create or add to project) and project overview with missing-media detection. |
 | `:feature:settings` | Android + Compose | exists | Storage, media access, permissions, about. |
-| `:media:playback` | Android | planned (M4) | Maps the timeline to a Media3 player for preview. |
+| `:media:playback` | Android + Compose | exists | `PreviewPlan` (segments on one track), `PreviewController` (lifecycle, timing, errors), `PlaybackEngine` with `ExoPlaybackEngine`, preview composables (`PreviewSurface`, `PreviewControls`, `BindPreviewLifecycle`). Holds the preview UI widgets because they bind directly to the Media3 `Player`. |
 | `:media:export` | Android | planned (M6) | Maps the timeline to a Media3 Transformer `Composition`, runs the export, falls back when codecs are unsupported. |
 | `:media:render` | Android | planned (M7+) | OpenGL ES effects and transitions as Media3 `GlEffect`s, shared by playback and export. |
 | `:feature:editor` | Android + Compose | planned (M5) | Editor screen, timeline UI, ViewModels. |
@@ -154,6 +154,37 @@ Android `namespace` is the same string:
 - **Missing media:** the project screen re-checks every source file's
   availability when the project changes and on every resume, then flags
   missing files. Relinking is planned with the editor.
+
+## Preview playback
+
+- **Structure:**
+  - `PreviewController` drives a `PlaybackEngine` (`ExoPlaybackEngine` in
+    production, a fake in tests) through a `PreviewPlan`.
+  - A plan is segments played back to back on a single track, in
+    microseconds. Today it holds one whole asset.
+  - The timeline milestones will build plans from clip sequences. Multi-segment
+    seeking and positioning are already implemented and tested.
+  - **Multi-layer compositing is not implemented.** Overlapping tracks,
+    transitions and effects need a compositing renderer (M7).
+- **Player lifetime:**
+  - The ViewModel owns the controller, so recomposition and configuration
+    changes never recreate the player.
+  - `BindPreviewLifecycle` attaches on start and detaches (releasing
+    decoders) on a real stop, but keeps the player across configuration
+    changes.
+  - Position and play state are restored on the next attach. `release()`
+    runs in `onCleared`.
+  - Engine factories capture only the application context.
+- **Media changes:** `setPlan` reloads in place on the same player, and an
+  identical plan is a no-op.
+- **Rendering:** Media3 `ContentFrame` with a SurfaceView, `ContentScale.Fit`
+  and a black shutter until the first frame. Decoders apply rotation
+  metadata, so `VideoSize` is already upright and portrait clips keep their
+  aspect ratio.
+- **Time:** position is polled every 50 ms only while playing, and updated on
+  every player event otherwise. Seek-bar drags seek once, on release.
+- **Errors:** Media3 error codes map to `PreviewError` categories, each with
+  its own message and a retry.
 
 ## Timing model
 
@@ -287,7 +318,8 @@ Versions checked against Google Maven and Maven Central on 2026-10-14:
 | material3-adaptive-navigation-suite | 1.4.0 (BOM) | 1.4.0 | — |
 | material-icons-core | 1.7.8 (BOM, frozen) | 1.7.8 | Extra icons are copied into `VeyroIcons` instead of using the large extended artifact. |
 | exifinterface | 1.4.2 | 1.4.2 | — |
-| Media3 (exoplayer, transformer, effect) | — | 1.11.1 | M4/M6 |
+| Media3 exoplayer, ui-compose | 1.11.1 | 1.11.1 | `ContentFrame` is `@UnstableApi`, so it is used only in `PreviewSurface.kt`. |
+| Media3 transformer, effect | — | 1.11.1 | M6/M7 |
 | Room | — | 2.8.5 | M3. Needs KSP: verify that the KSP 2.3.x line works with Kotlin 2.4.21 before adding. |
 
 ## Testing strategy

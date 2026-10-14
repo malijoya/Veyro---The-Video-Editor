@@ -76,7 +76,20 @@ Original scope:
 - Autosave (debounced, atomic write-and-rename) and recovery after process death.
 - Project list screen (`:feature:projects`): create, open, rename, delete.
 
-## M4 — Preview playback (`:media:playback`)
+## M4 — Preview playback (`:media:playback`) (single-asset preview code complete 2026-10-14, awaiting device run)
+- **Done:**
+  - `PreviewController` and `PreviewPlan` (single track, multi-segment
+    ready).
+  - ExoPlayer engine, plus a preview screen per source asset: play/pause,
+    seek bar, ±5 s, time, aspect fit, rotation, loading, error and retry,
+    switching assets.
+  - Lifecycle-safe player ownership.
+- **Tests:** JVM controller/plan/error/ViewModel tests, plus instrumented
+  ExoPlayer and Compose tests.
+- **Still open:** building plans from the M1 timeline, and frame-accurate
+  stepping. Multi-layer compositing is M7.
+
+Original scope:
 - Build the Media3 player input from `TimelineEvaluator`. Play, pause, seek,
   frame step.
 - Release and restore across lifecycle events. Handle missing media.

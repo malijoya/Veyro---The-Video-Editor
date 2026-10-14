@@ -35,6 +35,10 @@ data class ImportKey(val source: MediaSource, val projectId: String? = null) : N
 @Serializable
 data class ProjectKey(val projectId: String) : NavKey
 
+/** Full-screen preview of one of a project's source assets. */
+@Serializable
+data class PreviewKey(val projectId: String, val mediaId: String) : NavKey
+
 /** The tabs in the navigation bar or rail. */
 enum class TopLevelDestination(
     val key: NavKey,

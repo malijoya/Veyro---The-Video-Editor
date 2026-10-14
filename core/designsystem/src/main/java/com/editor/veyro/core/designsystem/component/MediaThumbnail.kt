@@ -74,6 +74,7 @@ public fun MediaThumbnail(
     unavailableDescription: String,
     modifier: Modifier = Modifier,
     unavailableIcon: ImageVector = VeyroIcons.BrokenImage,
+    contentScale: ContentScale = ContentScale.Crop,
 ) {
     val provider = LocalThumbnailProvider.current
     var sizePx by remember { mutableIntStateOf(0) }
@@ -112,7 +113,7 @@ public fun MediaThumbnail(
             is ThumbnailState.Loaded -> Image(
                 bitmap = current.bitmap,
                 contentDescription = null,
-                contentScale = ContentScale.Crop,
+                contentScale = contentScale,
                 modifier = Modifier.fillMaxSize(),
             )
             ThumbnailState.Unavailable -> Icon(

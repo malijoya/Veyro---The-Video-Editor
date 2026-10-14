@@ -84,4 +84,20 @@
         <item quantity="one">%1$d file can\'t be found. It may have been moved, deleted, or its access revoked. Its details are kept in the project.</item>
         <item quantity="other">%1$d files can\'t be found. They may have been moved, deleted, or their access revoked. Their details are kept in the project.</item>
     </plurals>
+    <!-- Media preview -->
+    <string name="preview_not_found_title">Media not found</string>
+    <string name="preview_not_found_message">It may have been removed from the project.</string>
+    <string name="preview_image_note">Photos are shown as stills. How long a photo stays on screen will be set on the timeline.</string>
+    <string name="preview_show">Show in preview</string>
+    <string name="preview_open">Preview</string>
+    <string name="preview_retry">Try again</string>
+    <string name="preview_error_title">Can\'t play this file</string>
+    <string name="preview_error_not_found">The file was moved or deleted.</string>
+    <string name="preview_error_permission">Veyro no longer has access to this file. Import it again to restore access.</string>
+    <string name="preview_error_unsupported">This format isn\'t supported on this device.</string>
+    <string name="preview_error_capabilities">This video is too demanding for this device\'s decoder (resolution or frame rate too high).</string>
+    <string name="preview_error_decoder">The device\'s decoder failed. Another app may be using it. Try again.</string>
+    <string name="preview_error_corrupt">The file appears to be damaged.</string>
+    <string name="preview_error_audio">The audio output couldn\'t start.</string>
+    <string name="preview_error_unknown">Something went wrong during playback.</string>
 </resources>

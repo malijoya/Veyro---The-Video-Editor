@@ -29,6 +29,7 @@ dependencies {
     implementation(projects.core.model)
     implementation(projects.data.project)
     implementation(projects.media.import)
+    implementation(projects.media.playback)
     implementation(projects.feature.library)
     implementation(projects.feature.project)
     implementation(projects.feature.settings)

@@ -2,6 +2,7 @@ package com.editor.veyro.feature.project.overview
 
 import android.text.format.DateUtils
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -68,6 +69,7 @@ import com.editor.veyro.core.designsystem.component.TextInputDialog
 import com.editor.veyro.core.designsystem.icon.VeyroIcons
 import com.editor.veyro.core.designsystem.theme.Layout
 import com.editor.veyro.core.designsystem.theme.Spacing
+import com.editor.veyro.core.model.project.MediaId
 import com.editor.veyro.core.model.project.MediaKind
 import com.editor.veyro.core.model.project.Project
 import com.editor.veyro.core.model.project.ProjectName
@@ -82,7 +84,12 @@ import com.editor.veyro.feature.project.thumbnailKind
 import com.editor.veyro.feature.project.titleText
 
 @Composable
-public fun ProjectRoute(viewModel: ProjectViewModel, onBack: () -> Unit, onAddMedia: (MediaSource) -> Unit) {
+public fun ProjectRoute(
+    viewModel: ProjectViewModel,
+    onBack: () -> Unit,
+    onAddMedia: (MediaSource) -> Unit,
+    onOpenMedia: (MediaId) -> Unit,
+) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     LaunchedEffect(state) {
         if (state == ProjectUiState.Deleted) onBack()
@@ -96,6 +103,7 @@ public fun ProjectRoute(viewModel: ProjectViewModel, onBack: () -> Unit, onAddMe
         state = state,
         onBack = onBack,
         onAddMedia = onAddMedia,
+        onOpenMedia = onOpenMedia,
         onRename = viewModel::rename,
         onDelete = viewModel::delete,
         onActionErrorShown = viewModel::actionErrorShown,
@@ -108,6 +116,7 @@ internal fun ProjectScreen(
     state: ProjectUiState,
     onBack: () -> Unit,
     onAddMedia: (MediaSource) -> Unit,
+    onOpenMedia: (MediaId) -> Unit,
     onRename: (String) -> Unit,
     onDelete: () -> Unit,
     onActionErrorShown: () -> Unit,
@@ -166,7 +175,7 @@ internal fun ProjectScreen(
                     title = stringResource(R.string.project_load_failed_title),
                     message = stringResource(R.string.project_load_failed_message),
                 )
-                is ProjectUiState.Loaded -> ProjectContent(state.project, state.missingUris.orEmpty())
+                is ProjectUiState.Loaded -> ProjectContent(state.project, state.missingUris.orEmpty(), onOpenMedia)
             }
         }
     }
@@ -211,7 +220,7 @@ internal fun ProjectScreen(
 }
 
 @Composable
-private fun ProjectContent(project: Project, missingUris: Set<String>) {
+private fun ProjectContent(project: Project, missingUris: Set<String>, onOpenMedia: (MediaId) -> Unit) {
     LazyVerticalGrid(
         columns = GridCells.Adaptive(Layout.mediaTileMinWidth),
         contentPadding = PaddingValues(start = Layout.screenGutter, end = Layout.screenGutter, bottom = Spacing.xl),
@@ -246,14 +255,17 @@ private fun ProjectContent(project: Project, missingUris: Set<String>) {
             SectionHeader(stringResource(R.string.project_media_section, project.media.size))
         }
         items(project.media, key = { it.id.value }) { media ->
-            ProjectMediaTile(media, missing = media.uri in missingUris)
+            ProjectMediaTile(media, missing = media.uri in missingUris, onOpen = { onOpenMedia(media.id) })
         }
     }
 }
 
 @Composable
-private fun ProjectMediaTile(media: MediaRef, missing: Boolean) {
+private fun ProjectMediaTile(media: MediaRef, missing: Boolean, onOpen: () -> Unit) {
     MediaTile(
+        modifier = Modifier
+            .clip(MaterialTheme.shapes.small)
+            .clickable(onClickLabel = stringResource(R.string.preview_open), onClick = onOpen),
         uri = media.uri,
         kind = media.kind.thumbnailKind,
         title = media.titleText(),

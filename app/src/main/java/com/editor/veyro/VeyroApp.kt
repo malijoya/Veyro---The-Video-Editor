@@ -22,7 +22,12 @@ import androidx.navigation3.runtime.entryProvider
 import androidx.navigation3.runtime.rememberNavBackStack
 import androidx.navigation3.runtime.rememberSaveableStateHolderNavEntryDecorator
 import androidx.navigation3.ui.NavDisplay
+import com.editor.veyro.core.model.project.MediaId
 import com.editor.veyro.core.model.project.ProjectId
+import com.editor.veyro.feature.project.preview.MediaPreviewRoute
+import com.editor.veyro.feature.project.preview.MediaPreviewViewModel
+import com.editor.veyro.media.playback.ExoPlaybackEngine
+import com.editor.veyro.media.playback.PreviewController
 import com.editor.veyro.feature.library.HomeRoute
 import com.editor.veyro.feature.library.LibraryViewModel
 import com.editor.veyro.feature.library.ProjectsRoute
@@ -39,6 +44,7 @@ import com.editor.veyro.feature.settings.SettingsRoute
 import com.editor.veyro.feature.settings.SettingsViewModel
 import com.editor.veyro.navigation.HomeKey
 import com.editor.veyro.navigation.ImportKey
+import com.editor.veyro.navigation.PreviewKey
 import com.editor.veyro.navigation.ProjectKey
 import com.editor.veyro.navigation.ProjectsKey
 import com.editor.veyro.navigation.SettingsKey
@@ -158,6 +164,25 @@ fun VeyroApp(container: AppContainer) {
                         },
                         onBack = { backStack.removeLastOrNull() },
                         onAddMedia = { source -> backStack.add(ImportKey(source, key.projectId)) },
+                        onOpenMedia = { mediaId -> backStack.add(PreviewKey(key.projectId, mediaId.value)) },
+                    )
+                }
+                entry<PreviewKey> { key ->
+                    // The ViewModel outlives the Activity across rotation, so its factory must not capture an Activity context.
+                    val appContext = context.applicationContext
+                    MediaPreviewRoute(
+                        viewModel = viewModel {
+                            MediaPreviewViewModel(
+                                savedState = createSavedStateHandle(),
+                                projectId = ProjectId(key.projectId),
+                                initialMediaId = MediaId(key.mediaId),
+                                repository = container.projects,
+                                createController = { scope ->
+                                    PreviewController(engineFactory = { ExoPlaybackEngine(appContext) }, scope = scope)
+                                },
+                            )
+                        },
+                        onBack = { backStack.removeLastOrNull() },
                     )
                 }
             },

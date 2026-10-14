@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="preview_time">%1$s / %2$s</string>
+    <string name="preview_play">Play</string>
+    <string name="preview_pause">Pause</string>
+    <string name="preview_replay">Replay</string>
+    <string name="preview_back_5">Back 5 seconds</string>
+    <string name="preview_forward_5">Forward 5 seconds</string>
+</resources>
