@@ -42,7 +42,7 @@ decision changes.
 | Module | Type | Status | Responsibility |
 |---|---|---|---|
 | `:app` | Android app | exists | Activity, Navigation 3 back stack, adaptive navigation suite, manual DI (`AppContainer`). No business logic. |
-| `:core:model` | JVM | exists | Time base (`TimeUs`, `FrameRate`, `DurationFormat`), `Project`, `MediaRef`, `ProjectName` rules. |
+| `:core:model` | JVM | exists | Time base (`TimeUs`, `FrameRate`, `DurationFormat`), `Project`, `MediaRef`, `ProjectName` rules, and the first piece of the timeline: `Timeline`/`Track`/`Clip`, plus `DefaultArrangement`. |
 | `:core:designsystem` | Android + Compose | exists | Dark theme tokens (color, type, spacing, shapes), icons, shared components, `MediaThumbnail` and its `ThumbnailProvider` seam. |
 | `:core:timeline` | JVM | planned (M1) | Edit commands, undo/redo, timeline evaluation ("what is active at time t"). |
 | `:data:project` | Android (JVM-only code so far) | exists | `ProjectRepository`. `FileProjectRepository` stores versioned JSON documents with atomic writes. Room index planned for M3. |
@@ -53,7 +53,7 @@ decision changes.
 | `:media:playback` | Android + Compose | exists | `PreviewPlan` (segments on one track), `PreviewController` (lifecycle, timing, errors), `PlaybackEngine` with `ExoPlaybackEngine`, preview composables (`PreviewSurface`, `PreviewControls`, `BindPreviewLifecycle`). Holds the preview UI widgets because they bind directly to the Media3 `Player`. |
 | `:media:export` | Android | planned (M6) | Maps the timeline to a Media3 Transformer `Composition`, runs the export, falls back when codecs are unsupported. |
 | `:media:render` | Android | planned (M7+) | OpenGL ES effects and transitions as Media3 `GlEffect`s, shared by playback and export. |
-| `:feature:editor` | Android + Compose | planned (M5) | Editor screen, timeline UI, ViewModels. |
+| `:feature:editor` | Android + Compose | exists | Editor screen: preview, timeline UI (ruler, tracks, filmstrips, playhead, zoom), selection, playhead/player sync. |
 
 Modules are created in the milestone that first gives them real code, never
 as empty shells.
@@ -185,6 +185,49 @@ Android `namespace` is the same string:
   every player event otherwise. Seek-bar drags seek once, on release.
 - **Errors:** Media3 error codes map to `PreviewError` categories, each with
   its own message and a retry.
+
+## Timeline UI
+
+- **Arrangement:** the editor shows `DefaultArrangement.build(project)`:
+  - videos and photos back to back on a Video track (photos 3 s)
+  - audio on an Audio track
+  It is rebuilt when the media changes. It isn't stored yet, and there are
+  no edit commands until M1.
+- **Coordinates:** `TimelineScale` is the only time/pixel conversion.
+  `TimelineViewportState` adds the scroll position. The playhead is fixed at
+  the viewport centre and the timeline moves under it, so the playhead time
+  is the scroll position. The ruler, clip layout, filmstrips, hit-testing and
+  gestures all use `xForTime`/`timeForX`/`visibleSpan`.
+- **Recomposition:** clip composables recompose only when clip data or
+  selection change. Scroll, zoom and playback reach them through the
+  layout phase (a custom `Layout` reads the viewport) and the draw phase
+  (ruler and filmstrips). Off-screen clips are neither measured nor placed,
+  and each clip is measured only for its visible span (plus a margin). That
+  keeps widths bounded on very long timelines.
+- **Filmstrips:**
+  - Square tiles are drawn only across the visible span. Missing frames are
+    requested from the draw pass and land in a state-backed LRU
+    (`StripThumbnails`, 300 tiles), which triggers a redraw.
+  - Frame times are quantised on a grid that coarsens as tiles cover more
+    time.
+  - `ThumbnailLoader` keeps the last 3 files' `MediaMetadataRetriever`s
+    open, so frames don't re-open the container.
+- **Gestures:** one detector handles everything:
+  - drag scrolls, then flings with spline decay
+  - pinch zooms around the playhead
+  - a tap selects the clip under the finger, and empty space clears the
+    selection
+  Zoom buttons and accessibility actions offer the same controls without
+  gestures.
+- **Sync:** while nobody is touching the timeline, the player position moves
+  the playhead. Scrubbing pauses playback and seeks at most every 80 ms,
+  with a final exact seek on release.
+- **Preview:** the editor previews one track, the main video track (or the
+  audio track for audio-only projects). Photos are timed by the player (via
+  Media3 image duration) and drawn by the UI over the surface. **Other
+  tracks are not mixed in. There is no multi-layer compositing.**
+- **Compact layouts:** windows shorter than 560 dp get slimmer tracks and a
+  one-line selection bar.
 
 ## Timing model
 

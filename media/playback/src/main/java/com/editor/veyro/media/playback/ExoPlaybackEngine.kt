@@ -1,10 +1,12 @@
 package com.editor.veyro.media.playback
 
 import android.content.Context
+import androidx.annotation.OptIn
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
+import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 
 /**
@@ -65,12 +67,17 @@ public class ExoPlaybackEngine(context: Context) : PlaybackEngine {
         this.listener = listener
     }
 
+    // setImageDurationMs is @UnstableApi in Media3 1.11. Stills are timed here.
+    // Their pixels are drawn by the UI, because the surface shows video only.
+    @OptIn(UnstableApi::class)
     override fun load(items: List<EngineItem>, startIndex: Int, startPositionMs: Long) {
         val mediaItems = items.map { item ->
             MediaItem.Builder()
                 .setUri(item.uri)
                 .apply {
-                    if (item.clipStartMs > 0 || item.clipEndMs != null) {
+                    if (item.stillDurationMs != null) {
+                        setImageDurationMs(item.stillDurationMs)
+                    } else if (item.clipStartMs > 0 || item.clipEndMs != null) {
                         setClippingConfiguration(
                             MediaItem.ClippingConfiguration.Builder()
                                 .setStartPositionMs(item.clipStartMs)

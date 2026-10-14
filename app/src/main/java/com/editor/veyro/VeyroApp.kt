@@ -24,6 +24,8 @@ import androidx.navigation3.runtime.rememberSaveableStateHolderNavEntryDecorator
 import androidx.navigation3.ui.NavDisplay
 import com.editor.veyro.core.model.project.MediaId
 import com.editor.veyro.core.model.project.ProjectId
+import com.editor.veyro.feature.editor.EditorRoute
+import com.editor.veyro.feature.editor.EditorViewModel
 import com.editor.veyro.feature.project.preview.MediaPreviewRoute
 import com.editor.veyro.feature.project.preview.MediaPreviewViewModel
 import com.editor.veyro.media.playback.ExoPlaybackEngine
@@ -43,6 +45,7 @@ import com.editor.veyro.feature.project.overview.ProjectViewModel
 import com.editor.veyro.feature.settings.SettingsRoute
 import com.editor.veyro.feature.settings.SettingsViewModel
 import com.editor.veyro.navigation.HomeKey
+import com.editor.veyro.navigation.EditorKey
 import com.editor.veyro.navigation.ImportKey
 import com.editor.veyro.navigation.PreviewKey
 import com.editor.veyro.navigation.ProjectKey
@@ -165,6 +168,24 @@ fun VeyroApp(container: AppContainer) {
                         onBack = { backStack.removeLastOrNull() },
                         onAddMedia = { source -> backStack.add(ImportKey(source, key.projectId)) },
                         onOpenMedia = { mediaId -> backStack.add(PreviewKey(key.projectId, mediaId.value)) },
+                        onOpenEditor = { backStack.add(EditorKey(key.projectId)) },
+                    )
+                }
+                entry<EditorKey> { key ->
+                    // The ViewModel outlives the Activity across rotation, so its factory must not capture an Activity context.
+                    val appContext = context.applicationContext
+                    EditorRoute(
+                        viewModel = viewModel {
+                            EditorViewModel(
+                                savedState = createSavedStateHandle(),
+                                projectId = ProjectId(key.projectId),
+                                repository = container.projects,
+                                createController = { scope ->
+                                    PreviewController(engineFactory = { ExoPlaybackEngine(appContext) }, scope = scope)
+                                },
+                            )
+                        },
+                        onBack = { backStack.removeLastOrNull() },
                     )
                 }
                 entry<PreviewKey> { key ->

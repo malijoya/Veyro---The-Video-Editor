@@ -48,9 +48,10 @@
     <string name="project_cover_description">Cover of %1$s</string>
     <string name="project_created_on">Created %1$s</string>
     <string name="project_media_section">Media (%1$d)</string>
-    <string name="project_editor_status_title">Timeline editing isn\'t available yet</string>
-    <string name="project_coming_soon">Coming soon</string>
-    <string name="project_editor_status_message">Trimming, arranging clips, effects and export are still being built. This project\'s media is saved and will open in the editor when it\'s ready.</string>
+    <string name="project_editor_status_title">Editor</string>
+    <string name="project_coming_soon">Editing tools coming soon</string>
+    <string name="project_open_editor">Open editor</string>
+    <string name="project_editor_status_message">See your clips on a timeline, scrub and preview the main track. Trimming, splitting, reordering, effects and export are still being built.</string>
     <string name="project_not_found_title">Project not found</string>
     <string name="project_not_found_message">It may have been deleted.</string>
     <string name="project_load_failed_title">Project couldn\'t be loaded</string>

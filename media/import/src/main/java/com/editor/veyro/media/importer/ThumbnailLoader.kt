@@ -30,6 +30,9 @@ import kotlinx.coroutines.withContext
  *   cleared when the system reports memory pressure.
  * - At most [MAX_CONCURRENT_DECODES] decodes run at once, so fast scrolling
  *   can't start dozens of decoders.
+ * - Timeline filmstrips ask for frames at many times in the same file. The
+ *   last [MAX_OPEN_RETRIEVERS] files keep a retriever open, so each frame
+ *   avoids re-opening and re-parsing the container.
  */
 public class ThumbnailLoader(
     context: Context,
@@ -37,6 +40,31 @@ public class ThumbnailLoader(
 ) {
     private val appContext = context.applicationContext
     private val decodePermits = Semaphore(MAX_CONCURRENT_DECODES)
+
+    /** Open retrievers by URI, most recently used last. Each is used by one decode at a time, guarded by its own lock. */
+    private val openRetrievers = object : LinkedHashMap<String, LockedRetriever>(MAX_OPEN_RETRIEVERS, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, LockedRetriever>): Boolean {
+            val evict = size > MAX_OPEN_RETRIEVERS
+            if (evict) eldest.value.close()
+            return evict
+        }
+    }
+
+    private class LockedRetriever(val retriever: MediaMetadataRetriever) {
+        val lock = Any()
+        var closed = false
+
+        fun close() = synchronized(lock) {
+            if (!closed) {
+                closed = true
+                try {
+                    retriever.release()
+                } catch (e: Exception) {
+                    // Nothing to recover.
+                }
+            }
+        }
+    }
 
     private val cache = object : LruCache<String, Bitmap>(cacheSizeKb()) {
         override fun sizeOf(key: String, value: Bitmap): Int = value.allocationByteCount / 1024
@@ -46,13 +74,19 @@ public class ThumbnailLoader(
         appContext.registerComponentCallbacks(object : ComponentCallbacks2 {
             override fun onTrimMemory(level: Int) {
                 // Drop everything when backgrounded or under pressure. Thumbnails are cheap to recreate.
-                if (level >= ComponentCallbacks2.TRIM_MEMORY_BACKGROUND) cache.evictAll()
+                if (level >= ComponentCallbacks2.TRIM_MEMORY_BACKGROUND) {
+                    cache.evictAll()
+                    closeRetrievers()
+                }
             }
 
             override fun onConfigurationChanged(newConfig: Configuration) = Unit
 
             @Deprecated("Deprecated in API 35", ReplaceWith(""))
-            override fun onLowMemory() = cache.evictAll()
+            override fun onLowMemory() {
+                cache.evictAll()
+                closeRetrievers()
+            }
         })
     }
 
@@ -60,22 +94,60 @@ public class ThumbnailLoader(
      * Returns a bitmap whose longer side is about [sizePx], or null if there
      * is nothing to show (unreadable file, or audio without cover art).
      */
-    public suspend fun load(uri: String, kind: MediaKind, sizePx: Int): Bitmap? {
+    public suspend fun load(uri: String, kind: MediaKind, sizePx: Int, timeUs: Long = 0): Bitmap? {
         require(sizePx > 0) { "sizePx must be positive" }
-        val key = "$sizePx|$uri"
+        val frameTimeUs = if (kind == MediaKind.VIDEO) timeUs.coerceAtLeast(0) else 0
+        val key = "$sizePx|$frameTimeUs|$uri"
         cache.get(key)?.let { return it }
         return withContext(ioDispatcher) {
             decodePermits.withPermit {
-                cache.get(key) ?: decode(uri.toUri(), kind, sizePx)?.also { cache.put(key, it) }
+                cache.get(key) ?: decode(uri.toUri(), kind, sizePx, frameTimeUs)?.also { cache.put(key, it) }
             }
         }
     }
 
-    private fun decode(uri: Uri, kind: MediaKind, sizePx: Int): Bitmap? =
-        providerThumbnail(uri, sizePx) ?: when (kind) {
-            MediaKind.VIDEO -> videoFrame(uri, sizePx)
-            MediaKind.IMAGE -> subsampledImage(uri, sizePx)
-            MediaKind.AUDIO -> embeddedArt(uri, sizePx)
+    private fun closeRetrievers() {
+        val all = synchronized(openRetrievers) { openRetrievers.values.toList().also { openRetrievers.clear() } }
+        all.forEach { it.close() }
+    }
+
+    /** A frame at [timeUs] from a retriever kept open for [uri]. */
+    private fun frameAt(uri: Uri, timeUs: Long, sizePx: Int): Bitmap? {
+        val key = uri.toString()
+        val entry = synchronized(openRetrievers) {
+            openRetrievers[key] ?: try {
+                LockedRetriever(MediaMetadataRetriever().apply { setDataSource(appContext, uri) })
+                    .also { openRetrievers[key] = it }
+            } catch (e: Exception) {
+                null
+            }
+        } ?: return null
+        return synchronized(entry.lock) {
+            if (entry.closed) {
+                null
+            } else {
+                try {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+                        entry.retriever.getScaledFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST_SYNC, sizePx, sizePx)
+                    } else {
+                        entry.retriever.getFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)?.let { scaleDown(it, sizePx) }
+                    }
+                } catch (e: Exception) {
+                    null
+                }
+            }
+        }
+    }
+
+    private fun decode(uri: Uri, kind: MediaKind, sizePx: Int, timeUs: Long): Bitmap? =
+        if (kind == MediaKind.VIDEO && timeUs > 0) {
+            frameAt(uri, timeUs, sizePx) // The provider thumbnail only shows the start.
+        } else {
+            providerThumbnail(uri, sizePx) ?: when (kind) {
+                MediaKind.VIDEO -> videoFrame(uri, sizePx)
+                MediaKind.IMAGE -> subsampledImage(uri, sizePx)
+                MediaKind.AUDIO -> embeddedArt(uri, sizePx)
+            }
         }
 
     private fun providerThumbnail(uri: Uri, sizePx: Int): Bitmap? {
@@ -146,6 +218,7 @@ public class ThumbnailLoader(
 
     private companion object {
         const val MAX_CONCURRENT_DECODES = 3
+        const val MAX_OPEN_RETRIEVERS = 3
 
         fun cacheSizeKb(): Int = (Runtime.getRuntime().maxMemory() / 1024 / 8).toInt()
     }

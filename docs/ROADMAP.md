@@ -94,7 +94,22 @@ Original scope:
   frame step.
 - Release and restore across lifecycle events. Handle missing media.
 
-## M5 — Editor screen (`:feature:editor`)
+## M5 — Editor screen (`:feature:editor`) (timeline UI code complete 2026-10-14, awaiting device run)
+- **Done:**
+  - Ruler, Video/Audio tracks with labels, filmstrips, a fixed playhead
+    synced to playback.
+  - Scroll with fling, pinch and button zoom, zoom to fit, tap to select.
+  - Compact layout and accessibility actions.
+  - Main-track preview, including photos.
+- **Tests:** JVM tests for scale/ruler/viewport geometry, preview-plan
+  mapping and the editor ViewModel.
+- **Still open:**
+  - gestures for trim, split and move (they need M1 commands)
+  - snapping
+  - audio waveforms
+  - multi-track preview (needs M7 compositing)
+
+Original scope:
 - Preview surface and multi-track timeline with zoom, playhead and
   filmstrip thumbnails.
 - Gestures for trim, split, move and delete, connected to M1 commands and undo.

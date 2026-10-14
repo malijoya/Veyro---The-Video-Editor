@@ -89,6 +89,7 @@ public fun ProjectRoute(
     onBack: () -> Unit,
     onAddMedia: (MediaSource) -> Unit,
     onOpenMedia: (MediaId) -> Unit,
+    onOpenEditor: () -> Unit,
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     LaunchedEffect(state) {
@@ -104,6 +105,7 @@ public fun ProjectRoute(
         onBack = onBack,
         onAddMedia = onAddMedia,
         onOpenMedia = onOpenMedia,
+        onOpenEditor = onOpenEditor,
         onRename = viewModel::rename,
         onDelete = viewModel::delete,
         onActionErrorShown = viewModel::actionErrorShown,
@@ -117,6 +119,7 @@ internal fun ProjectScreen(
     onBack: () -> Unit,
     onAddMedia: (MediaSource) -> Unit,
     onOpenMedia: (MediaId) -> Unit,
+    onOpenEditor: () -> Unit,
     onRename: (String) -> Unit,
     onDelete: () -> Unit,
     onActionErrorShown: () -> Unit,
@@ -175,7 +178,7 @@ internal fun ProjectScreen(
                     title = stringResource(R.string.project_load_failed_title),
                     message = stringResource(R.string.project_load_failed_message),
                 )
-                is ProjectUiState.Loaded -> ProjectContent(state.project, state.missingUris.orEmpty(), onOpenMedia)
+                is ProjectUiState.Loaded -> ProjectContent(state.project, state.missingUris.orEmpty(), onOpenMedia, onOpenEditor)
             }
         }
     }
@@ -220,7 +223,12 @@ internal fun ProjectScreen(
 }
 
 @Composable
-private fun ProjectContent(project: Project, missingUris: Set<String>, onOpenMedia: (MediaId) -> Unit) {
+private fun ProjectContent(
+    project: Project,
+    missingUris: Set<String>,
+    onOpenMedia: (MediaId) -> Unit,
+    onOpenEditor: () -> Unit,
+) {
     LazyVerticalGrid(
         columns = GridCells.Adaptive(Layout.mediaTileMinWidth),
         contentPadding = PaddingValues(start = Layout.screenGutter, end = Layout.screenGutter, bottom = Spacing.xl),
@@ -250,7 +258,7 @@ private fun ProjectContent(project: Project, missingUris: Set<String>, onOpenMed
         if (missingCount > 0) {
             fullWidth("missing") { MissingMediaBanner(missingCount) }
         }
-        fullWidth("editor-status") { EditorStatusCard() }
+        fullWidth("editor-status") { EditorCard(onOpenEditor) }
         fullWidth("media-header") {
             SectionHeader(stringResource(R.string.project_media_section, project.media.size))
         }
@@ -333,9 +341,12 @@ private fun ProjectStats(project: Project) {
     }
 }
 
-/** States plainly that editing isn't built yet, rather than offering buttons that do nothing. */
+/**
+ * Opens the editor. The card also says plainly which editing tools aren't
+ * built yet, so the timeline doesn't look broken when they're missing.
+ */
 @Composable
-private fun EditorStatusCard() {
+private fun EditorCard(onOpenEditor: () -> Unit) {
     Surface(
         color = MaterialTheme.colorScheme.surfaceContainer,
         shape = MaterialTheme.shapes.medium,
@@ -365,6 +376,9 @@ private fun EditorStatusCard() {
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                androidx.compose.material3.Button(onClick = onOpenEditor, modifier = Modifier.padding(top = Spacing.xs)) {
+                    Text(stringResource(R.string.project_open_editor))
+                }
             }
         }
     }

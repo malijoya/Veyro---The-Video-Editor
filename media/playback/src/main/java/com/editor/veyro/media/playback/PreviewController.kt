@@ -157,11 +157,15 @@ public class PreviewController(
         val location = plan.locate(positionUs.coerceIn(0, plan.durationUs))
         target.load(
             items = plan.segments.map { segment ->
-                EngineItem(
-                    uri = segment.uri,
-                    clipStartMs = segment.sourceStartUs / 1_000,
-                    clipEndMs = if (segment.clipped) (segment.sourceStartUs + segment.durationUs) / 1_000 else null,
-                )
+                if (segment.still) {
+                    EngineItem(uri = segment.uri, clipStartMs = 0, clipEndMs = null, stillDurationMs = segment.durationUs / 1_000)
+                } else {
+                    EngineItem(
+                        uri = segment.uri,
+                        clipStartMs = segment.sourceStartUs / 1_000,
+                        clipEndMs = if (segment.clipped) (segment.sourceStartUs + segment.durationUs) / 1_000 else null,
+                    )
+                }
             },
             startIndex = location.segmentIndex,
             startPositionMs = location.offsetUs / 1_000,

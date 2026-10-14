@@ -11,12 +11,16 @@ import com.editor.veyro.core.model.project.MediaRef
  * @property clipped whether playback must stop at `sourceStartUs + durationUs`.
  *   False for a whole asset, which plays to the file's real end, even if the
  *   probed duration was a millisecond short.
+ * @property still true for a photo. It is held for [durationUs] and drawn by
+ *   the UI over the video surface, because the preview surface renders video
+ *   only.
  */
 public data class PreviewSegment(
     val uri: String,
     val sourceStartUs: Long,
     val durationUs: Long,
     val clipped: Boolean,
+    val still: Boolean = false,
 ) {
     init {
         require(sourceStartUs >= 0) { "sourceStartUs must not be negative" }

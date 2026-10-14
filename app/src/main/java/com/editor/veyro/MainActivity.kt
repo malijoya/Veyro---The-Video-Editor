@@ -32,7 +32,7 @@ class MainActivity : ComponentActivity() {
                         ThumbnailKind.IMAGE -> MediaKind.IMAGE
                         ThumbnailKind.AUDIO -> MediaKind.AUDIO
                     }
-                    container.thumbnails.load(request.uri, kind, request.sizePx)?.asImageBitmap()
+                    container.thumbnails.load(request.uri, kind, request.sizePx, request.timeUs)?.asImageBitmap()
                 }
             }
             VeyroTheme {

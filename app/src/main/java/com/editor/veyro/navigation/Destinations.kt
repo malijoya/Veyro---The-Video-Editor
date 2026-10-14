@@ -35,6 +35,10 @@ data class ImportKey(val source: MediaSource, val projectId: String? = null) : N
 @Serializable
 data class ProjectKey(val projectId: String) : NavKey
 
+/** The timeline editor for a project. */
+@Serializable
+data class EditorKey(val projectId: String) : NavKey
+
 /** Full-screen preview of one of a project's source assets. */
 @Serializable
 data class PreviewKey(val projectId: String, val mediaId: String) : NavKey

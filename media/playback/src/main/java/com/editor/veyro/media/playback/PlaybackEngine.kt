@@ -8,6 +8,8 @@ public data class EngineItem(
     val clipStartMs: Long,
     /** End of the clip, or null to play to the end of the file. */
     val clipEndMs: Long?,
+    /** For a still image: how long it is held. Null for video and audio. */
+    val stillDurationMs: Long? = null,
 )
 
 public enum class EngineStatus { IDLE, BUFFERING, READY, ENDED }

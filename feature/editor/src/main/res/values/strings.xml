@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="editor_back">Back</string>
+    <string name="editor_play">Play</string>
+    <string name="editor_pause">Pause</string>
+    <string name="editor_replay">Replay</string>
+    <string name="editor_not_found_title">Project not found</string>
+    <string name="editor_not_found_message">It may have been deleted.</string>
+    <string name="editor_load_failed_title">Project couldn\'t be loaded</string>
+    <string name="editor_load_failed_message">The project file is still on the device. Restart the app to try again.</string>
+    <string name="editor_empty_timeline">This project has no media yet. Add videos, photos or audio from the project screen.</string>
+    <string name="editor_nothing_to_preview">Nothing to preview</string>
+    <string name="editor_preview_error">The preview couldn\'t play this part of the timeline.</string>
+    <string name="editor_media_unavailable">Media unavailable</string>
+
+    <string name="editor_track_video">Video</string>
+    <string name="editor_track_audio">Audio</string>
+    <string name="editor_clip_video">Video clip</string>
+    <string name="editor_clip_photo">Photo clip</string>
+    <string name="editor_clip_audio">Audio clip</string>
+    <string name="editor_a11y_clip">%1$s, %2$s, starts at %3$s, %4$s long</string>
+    <string name="editor_a11y_select_clip">Select</string>
+    <string name="editor_a11y_timeline">Timeline. Drag to move the playhead, pinch to zoom.</string>
+    <string name="editor_a11y_back_second">Move playhead back 1 second</string>
+    <string name="editor_a11y_forward_second">Move playhead forward 1 second</string>
+
+    <string name="editor_zoom_in">Zoom in</string>
+    <string name="editor_zoom_out">Zoom out</string>
+    <string name="editor_zoom_fit">Fit timeline</string>
+
+    <string name="editor_select_hint">Tap a clip to select it.</string>
+    <string name="editor_clip_timing">Starts at %1$s · %2$s long</string>
+    <string name="editor_jump_to_clip">Go to clip</string>
+    <string name="editor_clear_selection">Clear selection</string>
+    <string name="editor_tools_pending">Trim, split, reorder and export are being built. The preview plays the main track only.</string>
+    <string name="editor_coming_soon">Coming soon</string>
+</resources>

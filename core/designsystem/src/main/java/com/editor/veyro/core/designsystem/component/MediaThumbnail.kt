@@ -32,9 +32,12 @@ import com.editor.veyro.core.designsystem.icon.VeyroIcons
 /** The kind of media a thumbnail is for. Decides how it is decoded and which placeholder shows. */
 public enum class ThumbnailKind { VIDEO, IMAGE, AUDIO }
 
-/** What to load: a media URI rendered at about [sizePx] on its longer side. */
+/**
+ * What to load: a media URI rendered at about [sizePx] on its longer side.
+ * [timeUs] picks the video frame. It's ignored for images and audio.
+ */
 @Immutable
-public data class ThumbnailRequest(val uri: String, val kind: ThumbnailKind, val sizePx: Int)
+public data class ThumbnailRequest(val uri: String, val kind: ThumbnailKind, val sizePx: Int, val timeUs: Long = 0)
 
 /**
  * Supplies thumbnail bitmaps. The app provides the real media-backed
