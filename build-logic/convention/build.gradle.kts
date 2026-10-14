@@ -36,6 +36,10 @@ gradlePlugin {
             id = libs.plugins.veyro.android.compose.get().pluginId
             implementationClass = "AndroidComposeConventionPlugin"
         }
+        register("androidFeature") {
+            id = libs.plugins.veyro.android.feature.get().pluginId
+            implementationClass = "AndroidFeatureConventionPlugin"
+        }
         register("jvmLibrary") {
             id = libs.plugins.veyro.jvm.library.get().pluginId
             implementationClass = "JvmLibraryConventionPlugin"

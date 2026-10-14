@@ -41,17 +41,19 @@ decision changes.
 
 | Module | Type | Status | Responsibility |
 |---|---|---|---|
-| `:app` | Android app | exists | Activity, navigation, dependency wiring. No business logic. |
-| `:core:model` | JVM | exists | Project document types, time base (`TimeUs`, `FrameRate`), IDs. |
-| `:core:designsystem` | Android + Compose | exists | Theme, colors, typography, shared editor widgets. |
+| `:app` | Android app | exists | Activity, Navigation 3 back stack, adaptive navigation suite, manual DI (`AppContainer`). No business logic. |
+| `:core:model` | JVM | exists | Time base (`TimeUs`, `FrameRate`, `DurationFormat`), `Project`, `MediaRef`, `ProjectName` rules. |
+| `:core:designsystem` | Android + Compose | exists | Dark theme tokens (color, type, spacing, shapes), icons, shared components, `MediaThumbnail` and its `ThumbnailProvider` seam. |
 | `:core:timeline` | JVM | planned (M1) | Edit commands, undo/redo, timeline evaluation ("what is active at time t"). |
-| `:data:project` | Android | planned (M3) | Project persistence: Room index plus versioned document files, migrations, autosave. |
-| `:media:import` | Android | planned (M2) | Photo picker and SAF, persistable URI grants, metadata probing. |
+| `:data:project` | Android (JVM-only code so far) | exists | `ProjectRepository`. `FileProjectRepository` stores versioned JSON documents with atomic writes. Room index planned for M3. |
+| `:media:import` | Android | exists | `MediaProber` (metadata via `MediaExtractor` and `MediaMetadataRetriever`), `MediaMetadataAssembler` (pure merge rules), `MimeTypes`, `MediaAccess` (persisted grants, availability), `ThumbnailLoader` (video frame, image, audio cover art, LRU). Package is `media.importer` because `import` is a Kotlin keyword. |
+| `:feature:library` | Android + Compose | exists | Home and Projects tabs (`LibraryViewModel`). |
+| `:feature:project` | Android + Compose | exists | Media import (pickers, probing, selection, create or add to project) and project overview with missing-media detection. |
+| `:feature:settings` | Android + Compose | exists | Storage, media access, permissions, about. |
 | `:media:playback` | Android | planned (M4) | Maps the timeline to a Media3 player for preview. |
 | `:media:export` | Android | planned (M6) | Maps the timeline to a Media3 Transformer `Composition`, runs the export, falls back when codecs are unsupported. |
 | `:media:render` | Android | planned (M7+) | OpenGL ES effects and transitions as Media3 `GlEffect`s, shared by playback and export. |
-| `:feature:projects` | Android + Compose | planned | Project list, create, open, delete. |
-| `:feature:editor` | Android + Compose | planned | Editor screen, timeline UI, ViewModels. |
+| `:feature:editor` | Android + Compose | planned (M5) | Editor screen, timeline UI, ViewModels. |
 
 Modules are created in the milestone that first gives them real code, never
 as empty shells.
@@ -67,7 +69,11 @@ as empty shells.
   share `:media:render`.
 - `:feature:*` depends on `:core:*`, `:data:*` and `:media:*`, never on another
   `:feature:*`. Communication between features goes through navigation in
-  `:app`.
+  `:app`. Features expose `XxxRoute(viewModel, callbacks)` composables, and
+  `:app` creates the ViewModels and supplies navigation lambdas, so features
+  never see navigation keys.
+- `:media:import` depends on `:data:project` only to implement its
+  `MediaAccessReleaser` interface.
 - `:app` may depend on everything and contains only wiring.
 - Media3 types stay inside `:media:*`. The model never refers to `MediaItem`,
   `Effect` and the like. `:media:*` translates model to Media3 at the edge.
@@ -83,6 +89,71 @@ Android `namespace` is the same string:
 - `:core:designsystem` → `com.editor.veyro.core.designsystem` (`.theme`, `.component`)
 - `:media:export` → `com.editor.veyro.media.export`
 - `:feature:editor` → `com.editor.veyro.feature.editor`
+
+## App shell and UI conventions
+
+- **Navigation:** Navigation 3 (`androidx.navigation3` 1.2.0). There is one
+  `@Serializable` back stack rooted at Home, saved across process death.
+  ViewModels are scoped to back-stack entries with
+  `rememberViewModelStoreNavEntryDecorator`.
+- **Adaptive layout:** `NavigationSuiteScaffold` shows a bottom bar on compact
+  windows and a navigation rail on wider ones. It's hidden on detail screens.
+  Screen content is capped at `Layout.maxContentWidth`, and grids use adaptive
+  columns.
+- **Theme:** always dark, no dynamic color. Colors come only from
+  `MaterialTheme.colorScheme` or `VeyroColors`, and spacing only from
+  `Spacing`/`Layout`. Palette contrast ratios are documented in `Color.kt`.
+- **Strings:** every user-facing string is a resource in its feature module,
+  with plurals where counts appear.
+- **Accessibility:** decorative images have no description, and cards merge
+  their semantics. Destructive actions are confirmed, card actions are also
+  available as accessibility custom actions, section titles are headings,
+  touch targets are at least 48 dp, and text sizes use `sp`.
+- **Unbuilt features:** they appear only where users would look for them,
+  always with an `AvailabilityBadge` ("Coming soon") and a sentence saying what
+  is missing. They never use active-looking buttons.
+- **Thumbnails:** `MediaThumbnail` asks `LocalThumbnailProvider`, which `:app`
+  binds to `ThumbnailLoader`. The design system stays free of media code.
+- **DI:** manual (`AppContainer` in `VeyroApplication`). Hilt is deferred
+  until KSP compatibility with Kotlin 2.4 is confirmed.
+
+## Media import
+
+- **Pickers:**
+  - Photo Picker (`PickMultipleVisualMedia`) for photos and videos. It needs
+    no storage permission and falls back to the document picker on old
+    devices.
+  - Storage Access Framework (`OpenMultipleDocuments`) for files from any
+    provider, and for audio, which the Photo Picker doesn't offer.
+  - Veyro requests no storage or media permissions.
+- **No copying:** media is referenced by its `content://` URI, and read
+  access is persisted with `takePersistableUriPermission` right after
+  picking. Some providers refuse persistence. Those items are flagged
+  "Access may expire after restart". Grants that no saved project
+  references are released after import, discard and project deletion.
+- **Probing:**
+  - Opening the file descriptor first catches missing files and revoked
+    grants.
+  - The MIME type comes from the provider, falling back to the file
+    extension.
+  - `MediaExtractor` reports per-track codec, microsecond duration, frame
+    rate, sample rate and channels.
+  - `MediaMetadataRetriever` reports rotation, frame count, bitrate and tags.
+  - `MediaMetadataAssembler` merges the two. These rules are unit-tested.
+  - Declared frame rates (or frame count ÷ duration) snap to exact standard
+    rates via `FrameRate.fromApproximateFps`.
+- **Failures:**
+  - `UNSUPPORTED_TYPE`: not video, image or audio.
+  - `NOT_ACCESSIBLE`: missing file or revoked access.
+  - `UNREADABLE`: corrupt file or no usable tracks.
+  - Video containers holding only audio are imported as audio.
+- **Selection:** probed files are selected by default. Failed files and
+  files already in the target project are shown but can't be selected. The
+  selection is stored as a set of deselected URIs, so files that finish
+  probing later are selected automatically, and it survives process death.
+- **Missing media:** the project screen re-checks every source file's
+  availability when the project changes and on every resume, then flags
+  missing files. Relinking is planned with the editor.
 
 ## Timing model
 
@@ -116,6 +187,13 @@ ExoPlayer and Transformer without conversion.
   every past version.
 - **Edits:** each edit is a command `(Project) -> Project`. Undo/redo keeps
   previous immutable snapshots, so edits never mutate state.
+- **Schema history:**
+  - v1: name and timestamps, plus video and image media.
+  - v2: audio media, video/audio track info and tags.
+
+  Old versions are decoded and mapped forward in `ProjectDocumentCodec`, and
+  documents are always saved in the current version. Each version has a
+  verbatim fixture test.
 - **Storage:** the JSON document in app-private storage is the source of
   truth. Room holds an index (project list, title, duration, thumbnail path,
   last-opened) and the media library. If the index is lost, it can be rebuilt
@@ -202,11 +280,15 @@ Versions checked against Google Maven and Maven Central on 2026-10-14:
 | activity-compose | 1.13.0 | 1.13.0 | — |
 | lifecycle | 2.11.0 | 2.11.0 | ViewModel in M2 |
 | core-ktx | 1.19.1 | 1.19.1 | — |
-| kotlinx-coroutines | — | 1.11.0 | M1/M2 |
-| kotlinx-serialization-json | — | 1.11.0 | M3 |
+| kotlinx-coroutines | 1.11.0 | 1.11.0 | — |
+| kotlinx-serialization-json | 1.11.0 | 1.11.0 | — |
+| navigation3 | 1.2.0 | 1.2.0 | — |
+| lifecycle-viewmodel-navigation3 | 2.11.0 | 2.11.0 | — |
+| material3-adaptive-navigation-suite | 1.4.0 (BOM) | 1.4.0 | — |
+| material-icons-core | 1.7.8 (BOM, frozen) | 1.7.8 | Extra icons are copied into `VeyroIcons` instead of using the large extended artifact. |
+| exifinterface | 1.4.2 | 1.4.2 | — |
 | Media3 (exoplayer, transformer, effect) | — | 1.11.1 | M4/M6 |
 | Room | — | 2.8.5 | M3. Needs KSP: verify that the KSP 2.3.x line works with Kotlin 2.4.21 before adding. |
-| navigation-compose | — | 2.10.2 | M5 (also evaluate Navigation 3 when starting it) |
 
 ## Testing strategy
 
@@ -224,7 +306,8 @@ Versions checked against Google Maven and Maven Central on 2026-10-14:
 
 - `JAVA_HOME` must point to a JDK 17+. Android Studio's bundled JBR works:
   `C:\Program Files\Android\Android Studio\jbr` (JDK 25).
-- `gradle.properties` sets `kotlin.compiler.execution.strategy=in-process`,
+- `gradle.properties` (and `build-logic/gradle.properties`, since included
+  builds don't inherit it) sets `kotlin.compiler.execution.strategy=in-process`,
   because on the 12 GB development machine a separate Kotlin daemon could not
   allocate memory. If the Gradle daemon itself still crashes with
   `Native memory allocation failed`, close memory-heavy apps or build one task

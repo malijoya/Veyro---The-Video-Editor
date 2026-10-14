@@ -1,58 +1,52 @@
 package com.editor.veyro.core.designsystem.theme
 
-import android.app.Activity
-import android.os.Build
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
-import androidx.compose.material3.dynamicDarkColorScheme
-import androidx.compose.material3.dynamicLightColorScheme
-import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.platform.LocalContext
 
-private val DarkColorScheme = darkColorScheme(
-    primary = Purple80,
-    secondary = PurpleGrey80,
-    tertiary = Pink80
+private val VeyroColorScheme = darkColorScheme(
+    primary = VeyroPalette.Violet,
+    onPrimary = VeyroPalette.Ink,
+    primaryContainer = VeyroPalette.VioletContainer,
+    onPrimaryContainer = VeyroPalette.OnVioletContainer,
+    secondary = VeyroPalette.Magenta,
+    onSecondary = VeyroPalette.Ink,
+    secondaryContainer = VeyroPalette.MagentaContainer,
+    onSecondaryContainer = VeyroPalette.OnMagentaContainer,
+    tertiary = VeyroPalette.Magenta,
+    onTertiary = VeyroPalette.Ink,
+    background = VeyroPalette.Ink,
+    onBackground = VeyroPalette.TextPrimary,
+    surface = VeyroPalette.Surface,
+    onSurface = VeyroPalette.TextPrimary,
+    surfaceVariant = VeyroPalette.SurfaceHigh,
+    onSurfaceVariant = VeyroPalette.TextSecondary,
+    surfaceDim = VeyroPalette.Ink,
+    surfaceBright = VeyroPalette.SurfaceHighest,
+    surfaceContainerLowest = VeyroPalette.Ink,
+    surfaceContainerLow = VeyroPalette.SurfaceLow,
+    surfaceContainer = VeyroPalette.SurfaceMid,
+    surfaceContainerHigh = VeyroPalette.SurfaceHigh,
+    surfaceContainerHighest = VeyroPalette.SurfaceHighest,
+    outline = VeyroPalette.Outline,
+    outlineVariant = VeyroPalette.OutlineVariant,
+    error = VeyroPalette.Error,
+    onError = VeyroPalette.Ink,
+    errorContainer = VeyroPalette.ErrorContainer,
+    onErrorContainer = VeyroPalette.OnErrorContainer,
+    scrim = VeyroPalette.Ink,
 )
 
-private val LightColorScheme = lightColorScheme(
-    primary = Purple40,
-    secondary = PurpleGrey40,
-    tertiary = Pink40
-
-    /* Other default colors to override
-    background = Color(0xFFFFFBFE),
-    surface = Color(0xFFFFFBFE),
-    onPrimary = Color.White,
-    onSecondary = Color.White,
-    onTertiary = Color.White,
-    onBackground = Color(0xFF1C1B1F),
-    onSurface = Color(0xFF1C1B1F),
-    */
-)
-
+/**
+ * The Veyro theme. It is always dark and never uses dynamic (wallpaper)
+ * color, so footage is always judged against the same neutral surroundings.
+ */
 @Composable
-fun VeyroTheme(
-    darkTheme: Boolean = isSystemInDarkTheme(),
-    // Dynamic color is available on Android 12+
-    dynamicColor: Boolean = true,
-    content: @Composable () -> Unit
-) {
-    val colorScheme = when {
-        dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {
-            val context = LocalContext.current
-            if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
-        }
-
-        darkTheme -> DarkColorScheme
-        else -> LightColorScheme
-    }
-
+public fun VeyroTheme(content: @Composable () -> Unit) {
     MaterialTheme(
-        colorScheme = colorScheme,
-        typography = Typography,
-        content = content
+        colorScheme = VeyroColorScheme,
+        typography = VeyroTypography,
+        shapes = VeyroShapes,
+        content = content,
     )
 }

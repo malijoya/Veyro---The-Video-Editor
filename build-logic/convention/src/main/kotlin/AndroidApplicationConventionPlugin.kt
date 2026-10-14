@@ -13,6 +13,8 @@ class AndroidApplicationConventionPlugin : Plugin<Project> {
         extensions.configure<ApplicationExtension> {
             configureAndroidCommon(this)
             defaultConfig.targetSdk = VeyroBuildConfig.TARGET_SDK
+            // `:app:lint` also analyzes every library module it depends on.
+            lint.checkDependencies = true
         }
     }
 }

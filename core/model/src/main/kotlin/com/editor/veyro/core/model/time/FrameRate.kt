@@ -75,6 +75,34 @@ public class FrameRate private constructor(
         public val FPS_59_94: FrameRate = of(60_000, 1_001)
         public val FPS_60: FrameRate = of(60)
 
+        /** Broadcast and camera rates that measured values are snapped to. */
+        private val STANDARD_RATES: List<FrameRate> by lazy {
+            listOf(
+                FPS_23_976, FPS_24, FPS_25, FPS_29_97, FPS_30,
+                of(48_000, 1_001), of(48), FPS_50, FPS_59_94, FPS_60,
+                of(90), of(100), of(120_000, 1_001), of(120), of(240),
+            )
+        }
+
+        /** Largest difference from a standard rate that still snaps to it. 29.97 and 30 are 0.03 apart. */
+        private const val SNAP_TOLERANCE_FPS = 0.01
+
+        /**
+         * Converts a measured or container-declared rate (such as 29.97002,
+         * or 30 from a `MediaFormat`) to an exact [FrameRate].
+         *
+         * Values within 0.01 fps of a standard rate snap to it (29.9700 becomes
+         * 30000/1001). Anything else is kept to 1/1000 fps. Returns `null` for
+         * values that are not usable rates: NaN, infinite, zero or below, or
+         * above [MAX_FPS].
+         */
+        public fun fromApproximateFps(fps: Double): FrameRate? {
+            if (!fps.isFinite() || fps <= 0.0 || fps > MAX_FPS) return null
+            STANDARD_RATES.firstOrNull { kotlin.math.abs(it.fps - fps) <= SNAP_TOLERANCE_FPS }?.let { return it }
+            val milli = kotlin.math.round(fps * 1_000).toLong()
+            return if (milli <= 0) null else of(milli, 1_000)
+        }
+
         /** Creates the frame rate [numerator]/[denominator] fps, reduced to lowest terms. */
         public fun of(numerator: Long, denominator: Long = 1): FrameRate {
             require(numerator > 0 && denominator > 0) {

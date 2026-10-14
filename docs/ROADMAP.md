@@ -13,9 +13,29 @@ run. Device-dependent checks need a device or emulator.
   rounding), with unit tests.
 - Wrote the architecture document.
 
+## M0.5 — App shell and project library (done 2026-10-14)
+- Dark design system: color, type, spacing and shape tokens, plus reusable
+  components.
+- Adaptive navigation (bottom bar or rail) with Navigation 3.
+- Home: new project, import from gallery or files, recent projects with
+  thumbnails.
+- Projects tab with sort, rename and delete.
+- Settings: real storage and media-access figures, app permissions, version,
+  export marked "Coming soon".
+- Project creation and project overview. Brought forward from M2/M3 so
+  Recent Projects shows real data:
+  - JSON project documents with atomic writes
+  - persisted URI grants, released when unused
+  - metadata probing and a thumbnail cache
+- The editor and export are clearly marked as not available yet.
+- **Still open from M2/M3:** Media3-based frame-accurate probing, Room index,
+  autosave of edits, and on-device verification.
+
 ## M1 — Timeline core (`:core:model`, `:core:timeline`, JVM only)
-- Project, Track (video/audio/overlay/text), Clip, MediaRef, with stable IDs.
-  `schemaVersion = 1`.
+- Track (video/audio/overlay/text) and Clip, with stable IDs, referencing the
+  existing `MediaRef`s.
+- Project document `schemaVersion = 3`, with tested v1/v2 → v3 migrations
+  (v1 and v2 documents already exist on devices).
 - Clips have source in/out, timeline start, and speed as an exact rational.
 - Commands: insert, append, trim start/end, split, move, delete, ripple delete.
   Validation rejects overlaps and negative durations.
@@ -24,7 +44,26 @@ run. Device-dependent checks need a device or emulator.
 - **Acceptance:** exhaustive unit tests, including frame-accurate split and
   trim at 29.97 and 23.976 fps. No UI.
 
-## M2 — Media import (`:media:import`)
+## M2 — Media import (`:media:import`) (code complete 2026-10-14, awaiting device run)
+- **Done:**
+  - Photo Picker and SAF for video, images and audio.
+  - Persisted grants, flagging providers that refuse them.
+  - Probing of duration, dimensions, rotation, frame rate, codecs, sample
+    rate, channels, bitrate and tags.
+  - Clear unsupported, unreadable and missing outcomes.
+  - Selection screen with thumbnails, progress and select all/clear.
+  - Import into a new or existing project.
+  - Missing-media detection on the project screen.
+  - Schema v2 with v1 migration.
+- **Tests:**
+  - JVM: assembler rules, MIME rules, frame-rate snapping, schema migration,
+    import ViewModel.
+  - Instrumented: real MP4/WAV/PNG/JPEG files generated on the device.
+    These still need a device run.
+- **Still open:** relinking missing media, and Media3 `MetadataRetriever` if
+  extractor data proves insufficient on real devices.
+
+Original scope:
 - Photo picker (single and multiple, video and images). Persistable grants
   where available.
 - Metadata probing with Media3 `MetadataRetriever`/`MediaExtractor`: duration,

@@ -31,3 +31,8 @@ rootProject.name = "Veyro"
 include(":app")
 include(":core:model")
 include(":core:designsystem")
+include(":data:project")
+include(":media:import")
+include(":feature:library")
+include(":feature:project")
+include(":feature:settings")

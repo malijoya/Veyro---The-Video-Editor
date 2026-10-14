@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="library_app_name" translatable="false">Veyro</string>
+    <string name="library_new_project">New project</string>
+    <string name="library_new_project_subtitle">Pick videos and photos to start editing</string>
+    <string name="library_import_gallery">Gallery</string>
+    <string name="library_import_gallery_hint">Photos and videos</string>
+    <string name="library_import_files">Files</string>
+    <string name="library_import_files_hint">Video, photos and audio from any folder</string>
+    <string name="library_import_audio">Audio</string>
+    <string name="library_import_audio_hint">Music, voiceovers and sound effects</string>
+    <string name="library_recent_projects">Recent projects</string>
+    <string name="library_see_all">See all (%1$d)</string>
+    <string name="library_projects_title">Projects</string>
+
+    <string name="library_empty_title">No projects yet</string>
+    <string name="library_empty_message">Create a project to bring in your clips. Projects are saved on this device.</string>
+    <string name="library_error_load_title">Projects couldn\'t be loaded</string>
+    <string name="library_error_load_message">Your project files are still on the device. Restart the app to try again.</string>
+
+    <plurals name="library_item_count">
+        <item quantity="one">%1$d item</item>
+        <item quantity="other">%1$d items</item>
+    </plurals>
+    <string name="library_edited">Edited %1$s</string>
+    <string name="library_badge_photos">Photos</string>
+    <string name="library_badge_audio">Audio</string>
+    <string name="library_cover_unavailable">Cover media unavailable</string>
+    <string name="library_more_options">More options for %1$s</string>
+
+    <string name="library_action_open">Open project</string>
+    <string name="library_action_rename">Rename</string>
+    <string name="library_action_delete">Delete</string>
+    <string name="library_cancel">Cancel</string>
+    <string name="library_rename_title">Rename project</string>
+    <string name="library_rename_label">Project name</string>
+    <string name="library_rename_confirm">Save</string>
+    <string name="library_delete_title">Delete \"%1$s\"?</string>
+    <string name="library_delete_message">The project is removed from Veyro. Your original videos and photos are not deleted.</string>
+    <string name="library_error_rename">Couldn\'t rename the project</string>
+    <string name="library_error_delete">Couldn\'t delete the project</string>
+
+    <string name="library_sort">Sort projects</string>
+    <string name="library_sort_last_edited">Last edited</string>
+    <string name="library_sort_created">Date created</string>
+    <string name="library_sort_name">Name</string>
+</resources>

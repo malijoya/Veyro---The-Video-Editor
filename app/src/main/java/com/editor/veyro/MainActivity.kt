@@ -1,47 +1,45 @@
 package com.editor.veyro
 
+import android.graphics.Color
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.remember
+import androidx.compose.ui.graphics.asImageBitmap
+import com.editor.veyro.core.designsystem.component.LocalThumbnailProvider
+import com.editor.veyro.core.designsystem.component.ThumbnailKind
+import com.editor.veyro.core.designsystem.component.ThumbnailProvider
+import com.editor.veyro.core.model.project.MediaKind
 import com.editor.veyro.core.designsystem.theme.VeyroTheme
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
+        // The UI is always dark, so system bar icons are always light.
+        enableEdgeToEdge(
+            statusBarStyle = SystemBarStyle.dark(Color.TRANSPARENT),
+            navigationBarStyle = SystemBarStyle.dark(Color.TRANSPARENT),
+        )
         super.onCreate(savedInstanceState)
-        enableEdgeToEdge()
+        val container = (application as VeyroApplication).container
         setContent {
+            val thumbnails = remember {
+                ThumbnailProvider { request ->
+                    val kind = when (request.kind) {
+                        ThumbnailKind.VIDEO -> MediaKind.VIDEO
+                        ThumbnailKind.IMAGE -> MediaKind.IMAGE
+                        ThumbnailKind.AUDIO -> MediaKind.AUDIO
+                    }
+                    container.thumbnails.load(request.uri, kind, request.sizePx)?.asImageBitmap()
+                }
+            }
             VeyroTheme {
-                Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
-                    Greeting(
-                        name = "Android",
-                        modifier = Modifier.padding(innerPadding)
-                    )
+                CompositionLocalProvider(LocalThumbnailProvider provides thumbnails) {
+                    VeyroApp(container)
                 }
             }
         }
-    }
-}
-
-@Composable
-fun Greeting(name: String, modifier: Modifier = Modifier) {
-    Text(
-        text = "Hello $name!",
-        modifier = modifier
-    )
-}
-
-@Preview(showBackground = true)
-@Composable
-fun GreetingPreview() {
-    VeyroTheme {
-        Greeting("Android")
     }
 }

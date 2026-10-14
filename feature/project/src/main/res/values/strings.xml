@@ -1,0 +1,87 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- New project -->
+    <string name="project_default_name">Project %1$s</string>
+    <string name="project_new_title">New project</string>
+    <string name="project_name_label">Project name</string>
+    <string name="project_name_required">Enter a name</string>
+    <string name="project_source_gallery">Gallery</string>
+    <string name="project_source_files">Files</string>
+    <string name="project_draft_empty_title">No media selected</string>
+    <string name="project_draft_empty_message">Add videos, photos or audio with the + button.</string>
+    <string name="project_reading_media">Reading media…</string>
+    <string name="project_not_added">Won\'t be added</string>
+    <string name="project_failure_unsupported">Not a video, photo or audio file</string>
+    <string name="project_failure_not_accessible">File can\'t be opened</string>
+    <string name="project_failure_unreadable">File can\'t be read</string>
+    <string name="project_create_failed">The project couldn\'t be saved. Check free storage and try again.</string>
+    <plurals name="project_create">
+        <item quantity="one">Create project with %1$d item</item>
+        <item quantity="other">Create project with %1$d items</item>
+    </plurals>
+    <string name="project_discard_action">Discard import</string>
+    <string name="project_discard_title">Discard this import?</string>
+    <string name="project_discard_message">The media you picked won\'t be added. Your original files are not changed.</string>
+    <string name="project_discard_confirm">Discard</string>
+    <string name="project_keep_editing">Keep editing</string>
+
+    <!-- Shared -->
+    <plurals name="project_item_count">
+        <item quantity="one">%1$d item</item>
+        <item quantity="other">%1$d items</item>
+    </plurals>
+    <string name="project_total_video">%1$s of video</string>
+    <string name="project_badge_photo">Photo</string>
+    <string name="project_media_untitled">Untitled</string>
+    <string name="project_media_unavailable">Media unavailable. The file may have been moved or deleted.</string>
+
+    <!-- Project overview -->
+    <string name="project_back">Back</string>
+    <string name="project_rename">Rename project</string>
+    <string name="project_rename_title">Rename project</string>
+    <string name="project_save">Save</string>
+    <string name="project_cancel">Cancel</string>
+    <string name="project_delete">Delete</string>
+    <string name="project_delete_title">Delete \"%1$s\"?</string>
+    <string name="project_delete_message">The project is removed from Veyro. Your original videos and photos are not deleted.</string>
+    <string name="project_action_failed">That didn\'t work. Please try again.</string>
+    <string name="project_cover_description">Cover of %1$s</string>
+    <string name="project_created_on">Created %1$s</string>
+    <string name="project_media_section">Media (%1$d)</string>
+    <string name="project_editor_status_title">Timeline editing isn\'t available yet</string>
+    <string name="project_coming_soon">Coming soon</string>
+    <string name="project_editor_status_message">Trimming, arranging clips, effects and export are still being built. This project\'s media is saved and will open in the editor when it\'s ready.</string>
+    <string name="project_not_found_title">Project not found</string>
+    <string name="project_not_found_message">It may have been deleted.</string>
+    <string name="project_load_failed_title">Project couldn\'t be loaded</string>
+    <string name="project_load_failed_message">The project file is still on the device. Restart the app to try again.</string>
+    <!-- Media import -->
+    <string name="project_add_media_title">Add media</string>
+    <string name="project_add_more">Add more media</string>
+    <string name="project_source_audio">Audio</string>
+    <string name="project_selected_count">%1$d of %2$d selected</string>
+    <string name="project_select_all">Select all</string>
+    <string name="project_clear_selection">Clear</string>
+    <string name="project_already_in_project">Already in project</string>
+    <string name="project_state_selected">Selected</string>
+    <string name="project_state_not_selected">Not selected</string>
+    <string name="project_temporary_access">Access may expire after restart</string>
+    <string name="project_select_to_import">Select media to import</string>
+    <plurals name="project_add_items">
+        <item quantity="one">Add %1$d item to project</item>
+        <item quantity="other">Add %1$d items to project</item>
+    </plurals>
+    <string name="project_fps">%1$s fps</string>
+    <string name="project_khz">%1$s kHz</string>
+    <string name="project_mono">Mono</string>
+    <string name="project_stereo">Stereo</string>
+    <string name="project_channels">%1$d channels</string>
+
+    <!-- Missing media -->
+    <string name="project_media_missing">Missing</string>
+    <string name="project_media_missing_detail">File can\'t be found</string>
+    <plurals name="project_missing_banner">
+        <item quantity="one">%1$d file can\'t be found. It may have been moved, deleted, or its access revoked. Its details are kept in the project.</item>
+        <item quantity="other">%1$d files can\'t be found. They may have been moved, deleted, or their access revoked. Their details are kept in the project.</item>
+    </plurals>
+</resources>

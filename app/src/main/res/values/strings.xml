@@ -1,3 +1,6 @@
 <resources>
     <string name="app_name">Veyro</string>
+    <string name="nav_home">Home</string>
+    <string name="nav_projects">Projects</string>
+    <string name="nav_settings">Settings</string>
 </resources>

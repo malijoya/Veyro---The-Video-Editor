@@ -28,5 +28,6 @@ internal fun Project.configureAndroidCommon(extension: CommonExtension) {
     dependencies {
         add("testImplementation", libs.findLibrary("junit").get())
         add("androidTestImplementation", libs.findLibrary("androidx-junit").get())
+        add("androidTestImplementation", libs.findLibrary("androidx-test-runner").get())
     }
 }

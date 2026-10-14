@@ -1,5 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-
-    <style name="Theme.Veyro" parent="android:Theme.Material.Light.NoActionBar" />
+    <!-- Window theme shown before Compose draws. Dark to match the app, so there's no white flash on launch. -->
+    <style name="Theme.Veyro" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/veyro_window_background</item>
+        <item name="android:colorBackground">@color/veyro_window_background</item>
+    </style>
 </resources>
