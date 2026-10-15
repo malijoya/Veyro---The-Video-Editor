@@ -183,4 +183,30 @@
     <string name="transform_anchor_bottom_right">Anchor bottom right</string>
     <string name="transform_a11y_selected">Selected clip. Drag to move, pinch to scale, twist to rotate.</string>
     <string name="transform_a11y_cropping">Cropping. Drag the corners of the frame, or drag inside it to move it.</string>
+
+    <!-- Keyframes -->
+    <string name="keyframe_add">Add keyframe</string>
+    <string name="keyframe_delete">Delete keyframe</string>
+    <string name="keyframe_previous">Previous keyframe</string>
+    <string name="keyframe_next">Next keyframe</string>
+    <string name="keyframe_clear">Clear all</string>
+    <string name="keyframe_earlier">Move keyframe one frame earlier</string>
+    <string name="keyframe_later">Move keyframe one frame later</string>
+    <string name="keyframe_earlier_short">−1 frame</string>
+    <string name="keyframe_later_short">+1 frame</string>
+    <plurals name="keyframe_count">
+        <item quantity="one">%d keyframe</item>
+        <item quantity="other">%d keyframes</item>
+    </plurals>
+    <string name="keyframe_hint_none">Add a keyframe, move the playhead, then move, resize, turn or fade the clip. Veyro animates between keyframes.</string>
+    <string name="keyframe_hint_between">Changes here add a keyframe at the playhead.</string>
+    <string name="keyframe_hint_outside">Move the playhead over the clip to add or edit keyframes.</string>
+    <string name="keyframe_hint_last">This is the last keyframe. Its curve applies once another keyframe follows it.</string>
+    <string name="keyframe_easing">Curve to the next keyframe</string>
+    <string name="easing_linear">Linear</string>
+    <string name="easing_ease_in">Ease in</string>
+    <string name="easing_ease_out">Ease out</string>
+    <string name="easing_ease_in_out">Ease in and out</string>
+    <string name="easing_hold">Hold</string>
+    <string name="easing_custom">Custom curve</string>
 </resources>

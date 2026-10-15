@@ -2,6 +2,7 @@ package com.editor.veyro.core.timeline.export
 
 import com.editor.veyro.core.model.audio.GainEnvelope
 import com.editor.veyro.core.model.audio.Waveform
+import com.editor.veyro.core.model.overlay.OverlayContent
 import com.editor.veyro.core.model.project.MediaId
 import com.editor.veyro.core.model.project.MediaKind
 import com.editor.veyro.core.model.project.MediaRef
@@ -16,7 +17,8 @@ import kotlin.math.roundToInt
  *
  * What is rendered:
  * - The main track, in order, with each clip's exact source range and its
- *   transform (position, scale, rotation, anchor, crop, opacity). Video
+ *   transform (position, scale, rotation, anchor, crop, opacity) and
+ *   keyframes, evaluated per frame ([SegmentTransform]). Video
  *   clips keep their own sound, with the clip's and the track's volume,
  *   mute and fades. Photos are silent.
  * - Every audio track (music, voiceover), each with its gaps, mixed under
@@ -25,7 +27,8 @@ import kotlin.math.roundToInt
  * - A mix headroom curve ([MixHeadroom]) that turns overlapping sound down
  *   just enough not to clip, from the media's measured peaks.
  * - Text and stickers from the overlay tracks, bottom layer first, cut at
- *   the end of the picture. Empty or fully transparent text is skipped.
+ *   the end of the picture, with their keyframes. Empty text, and overlays
+ *   whose opacity is 0 on every frame, are skipped.
  *   A sticker whose image is unavailable blocks the export, like any other
  *   missing file.
  *
@@ -143,7 +146,10 @@ public object ExportPlanner {
                         problemFiles += label(image)
                         return@mapNotNull null
                     }
-                    if (!overlay.isVisible) return@mapNotNull null
+                    // Skip what never shows: empty text, or an opacity that is 0 on every frame.
+                    val content = overlay.content
+                    val empty = content is OverlayContent.Text && content.text.isBlank()
+                    if (empty || !clip.animation.everVisible(overlay.transform.opacity)) return@mapNotNull null
                     OverlayLayer(
                         clipId = clip.id.value,
                         startUs = clip.startUs,
@@ -153,6 +159,7 @@ public object ExportPlanner {
                         imageWidthPx = image?.displayWidthPx ?: 0,
                         imageHeightPx = image?.displayHeightPx ?: 0,
                         imageRotationDegrees = image?.rotationDegrees ?: 0,
+                        animation = clip.animation,
                     )
                 }
             }
@@ -179,6 +186,7 @@ public object ExportPlanner {
                 transform = v.clip.transform,
                 sourceWidthPx = v.ref.displayWidthPx,
                 sourceHeightPx = v.ref.displayHeightPx,
+                animation = v.clip.animation,
             )
         }
         val audio = pendingTracks.map { pieces ->

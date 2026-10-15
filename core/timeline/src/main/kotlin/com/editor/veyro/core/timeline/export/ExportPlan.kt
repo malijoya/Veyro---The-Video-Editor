@@ -1,5 +1,6 @@
 package com.editor.veyro.core.timeline.export
 
+import com.editor.veyro.core.model.animation.ClipAnimation
 import com.editor.veyro.core.model.overlay.Overlay
 import com.editor.veyro.core.model.overlay.OverlayContent
 import com.editor.veyro.core.model.project.MediaKind
@@ -58,6 +59,8 @@ public data class ExportSettings(
  * @property sourceWidthPx the source's upright width from the project's
  *   media info (0 if unknown); for the editor's handles, not for rendering.
  * @property sourceHeightPx the source's upright height.
+ * @property animation the clip's keyframes, in clip-local time (0 is the
+ *   segment's first frame). Read per frame through [SegmentTransform].
  */
 public data class VideoSegment(
     val uri: String,
@@ -69,6 +72,7 @@ public data class VideoSegment(
     val transform: ClipTransform = ClipTransform.DEFAULT,
     val sourceWidthPx: Int = 0,
     val sourceHeightPx: Int = 0,
+    val animation: ClipAnimation = ClipAnimation.NONE,
 ) {
     init {
         require(kind != MediaKind.AUDIO) { "Audio files can't be picture segments" }
@@ -79,6 +83,24 @@ public data class VideoSegment(
     val sourceEndUs: Long get() = sourceStartUs + durationUs
 
     val hasAudio: Boolean get() = audio != null
+}
+
+/**
+ * A video segment's placement over time, as the renderer reads it for each
+ * frame: [base] with [animation] evaluated at the frame's clip-local time,
+ * `timelineUs - startUs`. Preview and export both call [at] with the
+ * frame's composition (timeline) time, so a frame is placed identically in
+ * both, whatever order frames are rendered or sought in.
+ *
+ * @property startUs where the segment starts on the timeline (the sum of
+ *   the segments before it).
+ */
+public data class SegmentTransform(val base: ClipTransform, val animation: ClipAnimation, val startUs: Long) {
+    /** Whether the placement is the same on every frame. */
+    val isStatic: Boolean get() = !animation.animatesTransform
+
+    /** The placement for the frame at timeline time [timelineUs]. */
+    public fun at(timelineUs: Long): ClipTransform = animation.transformAt(base, timelineUs - startUs)
 }
 
 /** One piece of an audio track, in time order. */
@@ -121,6 +143,8 @@ public sealed interface AudioSegment {
  * @property imageHeightPx the image's upright height.
  * @property imageRotationDegrees how far the stored image must turn
  *   clockwise to be upright (its EXIF orientation).
+ * @property animation the overlay's keyframes, in clip-local time: 0 is
+ *   [startUs] (layers are only ever cut at their end). See [overlayAt].
  */
 public data class OverlayLayer(
     val clipId: String,
@@ -131,6 +155,7 @@ public data class OverlayLayer(
     val imageWidthPx: Int = 0,
     val imageHeightPx: Int = 0,
     val imageRotationDegrees: Int = 0,
+    val animation: ClipAnimation = ClipAnimation.NONE,
 ) {
     init {
         require(startUs >= 0 && endUs > startUs) { "Invalid overlay range" }
@@ -138,6 +163,13 @@ public data class OverlayLayer(
     }
 
     public operator fun contains(timeUs: Long): Boolean = timeUs >= startUs && timeUs < endUs
+
+    /** Whether the overlay looks the same on every frame. */
+    val isStatic: Boolean get() = !animation.animatesTransform
+
+    /** The overlay as drawn on the frame at timeline time [timelineUs]. */
+    public fun overlayAt(timelineUs: Long): Overlay =
+        if (isStatic) overlay else overlay.copy(transform = animation.overlayTransformAt(overlay.transform, timelineUs - startUs))
 }
 
 /**
@@ -212,6 +244,14 @@ public data class ExportPlan(
     val includeClipAudio: Boolean get() = video.any { it.hasAudio }
 
     val hasAudio: Boolean get() = includeClipAudio || audioTracks.isNotEmpty()
+
+    /** Each video segment's placement over time, in order. The one source of per-frame placement for preview and export. */
+    public fun segmentTransforms(): List<SegmentTransform> {
+        var startUs = 0L
+        return video.map { segment ->
+            SegmentTransform(segment.transform, segment.animation, startUs).also { startUs += segment.durationUs }
+        }
+    }
 }
 
 /** The result of planning: a plan, or the reasons there can't be one. */

@@ -114,7 +114,9 @@ class AudioExportInstrumentedTest {
         )
         val last = runBlocking { withTimeout(120_000) { pipeline.run(plan, ExportDestination.Document("unused"), name).toList().last() } }
         assertTrue("Expected completion, got $last", last is ExportStatus.Completed)
-        return assertNotNull("Exported file has no audio track", DecodedAudio.of(File(outDir, name)))!!
+        val audio = DecodedAudio.of(File(outDir, name))
+        assertNotNull("Exported file has no audio track", audio)
+        return audio!!
     }
 
     private fun assertNear(message: String, expectedUs: Long, actualUs: Long?) {

@@ -145,7 +145,7 @@ class OverlayRenderingInstrumentedTest {
     fun timelineOverlayRedrawsOnlyAtLayerBoundariesAndPlacesRegionsExactly() {
         val first = OverlayLayer("a", 1_000_000, 2_000_000, boxed(0.25f, 0.25f))
         val second = OverlayLayer("b", 1_500_000, 3_000_000, boxed(0.75f, 0.75f))
-        val overlay = TimelineOverlay(listOf(first, second), 640, 360, StickerImages(context))
+        val overlay = TimelineOverlay(LiveOverlays(listOf(first, second)), 640, 360, StickerImages(context))
         overlay.configure(Size(640, 360))
 
         val none = overlay.getBitmap(0)

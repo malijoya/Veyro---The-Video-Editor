@@ -70,7 +70,7 @@ class OverlayEditTest {
     }
 
     private fun idOf(t: Timeline, words: String): ClipId =
-        t.overlayTracks.flatMap { it.clips }.first { (it.overlay!!.content as OverlayContent.Text).text == words }.id
+        t.overlayTracks.flatMap { it.clips }.first { (it.overlay!!.content as? OverlayContent.Text)?.text == words }.id
 
     // ---------------- Adding and stacking ----------------
 

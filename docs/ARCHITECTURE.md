@@ -42,7 +42,7 @@ decision changes.
 | Module | Type | Status | Responsibility |
 |---|---|---|---|
 | `:app` | Android app | exists | Activity, Navigation 3 back stack, adaptive navigation suite, manual DI (`AppContainer`). No business logic. |
-| `:core:model` | JVM | exists | Time base (`TimeUs`, `FrameRate`, `DurationFormat`), `Project`, `MediaRef`, `ProjectName` rules, and the first piece of the timeline: `Timeline`/`Track`/`Clip`, plus `DefaultArrangement`. |
+| `:core:model` | JVM | exists | Time base (`TimeUs`, `FrameRate`, `DurationFormat`), `Project`, `MediaRef`, `ProjectName` rules, the timeline (`Timeline`/`Track`/`Clip`, `DefaultArrangement`), audio, overlays, transforms, and the keyframe engine (`animation`: `Easing`, `KeyframeTrack`, `ClipAnimation`, `Keyframing`). |
 | `:core:designsystem` | Android + Compose | exists | Dark theme tokens (color, type, spacing, shapes), icons, shared components, `MediaThumbnail` and its `ThumbnailProvider` seam. |
 | `:core:timeline` | JVM | exists | Editing domain: `EditCommand`, `TimelineEditor` (trim, split, move/reorder, delete, close gaps), `Snapper` (edge, playhead and frame snapping, zoom-independent threshold), `TimelinePatch` and `EditHistory` (patch-based undo/redo). `export.ExportPlanner` turns a timeline into an `ExportPlan` (segments, source ranges, background audio with gaps, settings, warnings and blockers). |
 | `:data:project` | Android | exists | `ProjectRepository`. `FileProjectRepository` stores versioned JSON documents through `ProjectDocumentStore` (safe writes with backup). `RoomProjectIndex` holds list metadata. Also `ProjectAutosave`, `ProjectInterchange` (portable project files), `ProjectFileGateway` (Storage Access Framework) and `SourceReferencePolicy`. |
@@ -242,8 +242,8 @@ Android `namespace` is the same string:
   if its size differs from import time. Both are flagged on the project
   screen. Relinking comes later.
 - **Effects:** clips carry a portable effect list (`type` + numeric
-  `params`), and edits keep it. **No effect is rendered or editable yet**
-  (M7).
+  `params`), and edits keep it. Their parameters can be keyframed. **No
+  effect is rendered or editable yet.**
 
 ## Timeline editing
 
@@ -398,6 +398,8 @@ ExoPlayer and Transformer without conversion.
   - v4: project settings (canvas, frame rate, snapping, photo length),
     clip effects, and media `accessPersisted`. The frame rate moved from the
     timeline into settings.
+  - v5–v8: clip and track audio, overlays, clip transforms, clip keyframes.
+    Each is an optional field on the v4 shape (see `ProjectDocument.kt`).
 
   Old versions are decoded and mapped forward in `ProjectDocumentCodec`, and
   documents are always saved in the current version. Each version has a
@@ -560,7 +562,7 @@ Clip.overlay (core:model) ─► ExportPlanner ─► ExportPlan.overlays (Overl
   font's generic fallback (sans, serif or monospace) instead. Characters a
   font lacks (emoji, CJK, Arabic, Devanagari) come from the system fallback
   fonts, per character, in preview and export alike.
-- **Editing on screen.** The player renders every overlay except the
+- **Editing on screen.** While paused, the player renders every overlay except the
   selected one. `OverlayCanvas` draws that one with the same painter, scaled
   from canvas pixels to the screen, plus its frame and handle. A drag,
   pinch or twist updates it on the next frame without reloading the player.
@@ -651,6 +653,104 @@ Clip.transform (core:model) ─► ExportPlanner ─► VideoSegment.transform
   ordered, an unreadable shape lock dropped, transforms on non-video tracks
   ignored).
 
+## Keyframes (M9)
+
+```
+Clip.animation (core:model) ─► ExportPlanner ─► VideoSegment.animation ─► plan.segmentTransforms() ─► LiveTransform ─► Crop/Placement/Opacity stages
+                                       └──────► OverlayLayer.animation ─► OverlayLayer.overlayAt(t) ─► TimelineOverlay
+editor: PictureUi.at(t) / OverlayUi.at(t) (canvas, panels) ─ Keyframing (edit rules) ─► SetClipAnimation / SetClipTransform / SetOverlay
+```
+
+- **Model (`core:model/animation`).** A `ClipAnimation` maps each animated
+  property to a `KeyframeTrack`: keyframes sorted by time, at most one per
+  time, never empty. Properties are the placement channels shared by
+  pictures and overlays (`TransformChannel`: position x and y, scale,
+  rotation, opacity) and effect parameters (`EffectParam(effectId,
+  param)`). A property without keyframes keeps the clip's static value, so
+  an empty animation changes nothing.
+- **Time semantics.** Keyframe times are **clip-local**: µs since the
+  clip's first frame on the timeline (`Clip.localTimeOf`,
+  `Clip.timelineTimeOf`). Moving a clip moves its animation. The editing
+  engine keeps keyframes on the same moment of the clip's content: a
+  start trim shifts them by the trimmed amount, and a split gives each
+  part the keyframes that shape its own range (`ClipAnimation.part`),
+  re-based to its start. So trims and splits never move an animation
+  relative to the picture, and every frame across a split is unchanged
+  (tested over random splits). Keyframes outside the clip are kept: they
+  shape the curve inside it and come back when a trim is undone. Audio gain
+  keyframes predate this and stay in source time.
+- **Interpolation.** Before the first and after the last keyframe the
+  nearest value holds; between `a` and `b` the value is
+  `a + (b - a) × a.easing(fraction)`, where the fraction is the elapsed
+  integer microseconds over the segment's. A keyframe's easing shapes the
+  way to the next one: linear, hold, CSS ease-in, ease-out, ease-in-out,
+  or any cubic Bézier (x within 0..1, y may overshoot). Bézier curves are
+  solved with a fixed number of Newton and bisection steps, so the same
+  time gives bit-for-bit the same value everywhere. Rotation keyframes
+  aren't wrapped (0 → 720 turns twice); the evaluated angle is wrapped, and
+  scale, opacity and position are clamped, when applied to a transform.
+- **Deterministic evaluation, no clocks.** Evaluation is a pure function of
+  the requested time. Every consumer asks for a frame's own time:
+  - Export and preview: `ExportPlan.segmentTransforms()` gives each video
+    segment's `SegmentTransform` (static transform, animation, start). The
+    crop, placement and opacity stages call `at(presentationTimeUs)` for
+    every frame. Overlays: `TimelineOverlay` calls `OverlayLayer.overlayAt`
+    with each frame's time.
+  - Time base: per-item effects get the frame's composition time, the
+    same time the composition-level overlay sees. With one picture
+    sequence, both run in one frame processor after the input stage adds
+    the item's offset (Media3 1.11.1 `ExternalTextureManager`).
+    `KeyframeExportInstrumentedTest` checks it on the second clip of an
+    export.
+  - Editor: the canvas, its hit-testing and gestures, and the panels show
+    `PictureUi.at(playhead)` / `OverlayUi.at(playhead)`, the same
+    evaluation. The playhead comes from the player position or the scrub,
+    never from a timer. Scrubbing backwards, seeking and redrawing a paused
+    frame all give the same value for the same time.
+- **Editing rules (`Keyframing`).** A *keyframe* in the UI is a moment: the
+  placement channels at one clip-local time.
+  - Add keys every channel at its current value, so nothing moves.
+  - Delete removes the moment from every channel. A channel losing its
+    last keyframe keeps that value as its static value, so nothing jumps.
+  - Easing applies to the whole moment. Nudge moves it a frame.
+  - Clear removes all placement keyframes and keeps what was shown at the
+    playhead.
+  - On a keyframed clip, a gesture or slider at the playhead keys only the
+    changed channels there. It edits the moment within half a frame, or
+    else the frame under the playhead. The change is measured from what was
+    shown at the exact playhead. Rotation is stored the short way from the
+    shown angle (170° → -170° is +20°, stored as 190°). Crop, anchor and fit
+    aren't animatable and change the static transform. A clip without
+    keyframes is edited as before.
+  - Each action is one command (`SetClipAnimation`, or
+    `SetClipTransform` / `SetOverlay` with an animation), so undo and redo
+    are exact. Reset clears placement keyframes. A duplicated overlay keeps
+    its keyframes, nudged.
+  - Placement keyframes are refused on sound clips, and effect keyframes
+    for effects the clip lacks (`NOT_ANIMATABLE`).
+- **Live preview.** Keyframes, transforms and overlays are all live values
+  in the running composition (`LiveTransform`, `LiveOverlays`). A plan that
+  differs only in them updates in place, without a reload, and a paused
+  frame is redrawn. While paused, the selected overlay is hidden from the
+  player (`PreviewController.setHiddenOverlay`, also live) and drawn by the
+  editing canvas. While playing, the player draws it, frame-exactly, and
+  the canvas draws no handles.
+- **Overlay rendering cost.** Static layers reuse one uploaded bitmap
+  between layer boundaries, as before. Animated layers are redrawn on every
+  frame into two recycled bitmaps, so changed content always arrives as a
+  different bitmap, which Media3 uploads. Sticker images are decoded once,
+  at the largest scale their keyframes reach.
+- **UI.** The keyframe bar shows for a selected overlay, or a picture with
+  its Transform panel open. It has previous/next (to select a keyframe,
+  the playhead moves onto it), add/delete at the playhead, the curve to
+  the next keyframe, ±1 frame, and Clear all. Timeline clips show a
+  diamond at each keyframe, highlighted under the playhead.
+- **Storage.** Schema v8: an optional `animation` list per clip, with
+  `{property, effectId?, param?, keyframes: [{timeUs, value, easing}]}`.
+  Decoding is lenient: unknown properties, non-finite values, repeated
+  times and keyframes for missing effects are dropped, an unknown easing
+  reads as linear, and placement keyframes on sound clips are ignored.
+
 ## Export (M6)
 
 ```
@@ -720,7 +820,7 @@ Checked against the Media3 1.11.1 sources and the Transformer guides
 | Clip effects | Saved but not rendered; the export screen warns. | The effects milestone (M7) adds shared `GlEffect`s. |
 | Extra video tracks (picture-in-picture) | Ignored, with a warning. | Only the main video track is rendered. Text and stickers are, and every audio track is mixed. |
 | Custom fonts (importing a font file) | Not available; nine built-in families. | Fonts would need to be copied into the project and travel with project files. |
-| Animated text, overlay keyframes, text templates | Not available. An overlay is static for its whole range. | The model has room for keyframes (as audio gain has); the editor and renderer don't animate yet. |
+| Animated text style (color, size, letter by letter), text templates | Not available. Overlays animate position, scale, rotation and opacity only. | Not in the model yet. |
 | Animated stickers (GIF, animated WebP) | First frame only. | `StickerImages` decodes a still. |
 | Vertical text, per-character styling, letter and line spacing | Not available. | One style per text overlay. |
 | More than 15 SDR overlays at the same moment | Fine: all visible overlays are drawn into one Media3 overlay texture. | Media3's limit is per `TextureOverlay`, and Veyro uses one. |
@@ -731,8 +831,11 @@ Checked against the Media3 1.11.1 sources and the Transformer guides
 | Ducking, EQ, noise reduction, audio effects | Not available. | Not in the model yet. |
 | Audio-only projects | Blocked. | Output must have a video track. |
 | Transitions, crossfades | Not available. | No transition model yet; Media3 Compositions don't support crossfading video or audio tracks. |
-| Speed changes, keyframes | Not available. | Not in the timeline model yet. |
-| Animated transforms (keyframed position, scale, rotation, crop) | Not available. A transform holds for the whole clip. | The effects read a transform per frame already; keyframes need the model and editor. |
+| Speed changes | Not available. | Not in the timeline model yet. |
+| Keyframed crop, anchor or fit | Not available. Position, scale, rotation and opacity animate. | Crop changes the picture's shape and anchor its pivot; animating them needs their own interpolation rules. |
+| Effect parameter keyframes | Stored, evaluated (`ClipAnimation.effectsAt`), carried through edits and undo, not editable or rendered. | No effect renders yet. |
+| Selecting a keyframe by tapping its timeline marker | Not available. The keyframe bar's arrows move the playhead onto a keyframe. | The timeline's single gesture detector doesn't hit-test markers yet. |
+| Bézier curve editor, per-channel keyframes in the UI | The model and files support any cubic Bézier and per-channel keyframes. The UI offers five preset curves, applied to all channels at a moment. | UI scope. |
 | Flip / mirror, perspective, skew | Not available. | Not in `ClipTransform`. |
 | Background other than black (colour, blur) behind a moved or shrunk clip | Black. | Needs a background layer below the main track. |
 | Non-square pixels (anamorphic sources) | Laid out as if pixels were square. | Media3 reports the pixel aspect ratio but the placement ignores it. |

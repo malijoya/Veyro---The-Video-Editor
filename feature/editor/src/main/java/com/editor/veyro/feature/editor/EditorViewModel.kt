@@ -4,6 +4,10 @@ import androidx.compose.runtime.Immutable
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.editor.veyro.core.model.animation.ClipAnimation
+import com.editor.veyro.core.model.animation.Easing
+import com.editor.veyro.core.model.animation.Keyframing
+import com.editor.veyro.core.model.animation.TransformChannel
 import com.editor.veyro.core.model.audio.AudioRole
 import com.editor.veyro.core.model.audio.ClipAudio
 import com.editor.veyro.core.model.audio.TrackAudio
@@ -21,6 +25,8 @@ import com.editor.veyro.core.model.project.MediaRef
 import com.editor.veyro.core.model.project.Project
 import com.editor.veyro.core.model.project.ProjectId
 import com.editor.veyro.core.model.project.ProjectSettings
+import com.editor.veyro.core.model.time.FrameRounding
+import com.editor.veyro.core.model.timeline.Clip
 import com.editor.veyro.core.model.timeline.ClipId
 import com.editor.veyro.core.model.timeline.DefaultArrangement
 import com.editor.veyro.core.model.timeline.Timeline
@@ -55,6 +61,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.stateIn
@@ -78,6 +85,8 @@ public data class TimelineClipUi(
     val waveform: Waveform? = null,
     /** The text or sticker, on overlay tracks. Text clips have no media: [uri] is empty and [title] is the text. */
     val overlay: Overlay? = null,
+    /** Clip-local times of the clip's placement keyframes inside the clip, for the timeline's markers. */
+    val keyframeTimesUs: List<Long> = emptyList(),
 ) {
     val endUs: Long get() = startUs + durationUs
     val sourceOutUs: Long get() = sourceInUs + durationUs
@@ -103,6 +112,9 @@ public data class TimelineTrackUi(
  * @property overlay the overlay as shown: an unsaved change being made
  *   (a drag, a slider) replaces the saved one here.
  * @property imageUri the sticker's image; null for text.
+ * @property animation its keyframes (with the change in progress), in
+ *   clip-local time. [overlay] holds the static values; [at] gives what is
+ *   shown at a moment.
  */
 @Immutable
 public data class OverlayUi(
@@ -114,8 +126,13 @@ public data class OverlayUi(
     val imageWidthPx: Int = 0,
     val imageHeightPx: Int = 0,
     val imageRotationDegrees: Int = 0,
+    val animation: ClipAnimation = ClipAnimation.NONE,
 ) {
     public operator fun contains(timeUs: Long): Boolean = timeUs >= startUs && timeUs < endUs
+
+    /** This overlay as shown at timeline time [timeUs]: its keyframes evaluated there, as the render evaluates them. */
+    public fun at(timeUs: Long): OverlayUi =
+        if (!animation.animatesTransform) this else copy(overlay = overlay.copy(transform = animation.overlayTransformAt(overlay.transform, timeUs - startUs)))
 }
 
 /**
@@ -135,8 +152,14 @@ public data class PictureUi(
     val transform: ClipTransform,
     val sourceWidthPx: Int,
     val sourceHeightPx: Int,
+    /** Its keyframes (with the change in progress), in clip-local time. [transform] holds the static values. */
+    val animation: ClipAnimation = ClipAnimation.NONE,
 ) {
     public operator fun contains(timeUs: Long): Boolean = timeUs >= startUs && timeUs < endUs
+
+    /** This picture as shown at timeline time [timeUs]: its keyframes evaluated there, as the render evaluates them. */
+    public fun at(timeUs: Long): PictureUi =
+        if (!animation.animatesTransform) this else copy(transform = animation.transformAt(transform, timeUs - startUs))
 
     /** The picture's layout on a [canvasWidthPx] x [canvasHeightPx] canvas. */
     public fun placement(canvasWidthPx: Int, canvasHeightPx: Int, transform: ClipTransform = this.transform): ClipPlacement =
@@ -205,6 +228,8 @@ public sealed interface EditorUiState {
         val stickerChoices: List<StickerChoice> = emptyList(),
         /** The main track's videos and photos, in order, with unsaved transform changes applied. */
         val pictures: List<PictureUi> = emptyList(),
+        /** One frame of the project's rate, in µs. A keyframe within half of it from the playhead counts as the one at the playhead. */
+        val frameDurationUs: Long = 33_334,
     ) : EditorUiState {
         val selectedTrack: TimelineTrackUi? get() = selectedClip?.let { clip -> tracks.firstOrNull { it.id == clip.trackId } }
 
@@ -261,11 +286,11 @@ public class EditorViewModel(
     private val draft = MutableStateFlow<Draft?>(null)
 
     /** An overlay change in progress (a drag on the preview, a slider), shown before it's saved. */
-    private data class OverlayDraft(val clipId: ClipId, val overlay: Overlay)
+    private data class OverlayDraft(val clipId: ClipId, val overlay: Overlay, val animation: ClipAnimation)
     private val overlayDraft = MutableStateFlow<OverlayDraft?>(null)
 
     /** A clip transform change in progress, shown (in the real render) before it's saved. */
-    private data class TransformDraft(val clipId: ClipId, val transform: ClipTransform)
+    private data class TransformDraft(val clipId: ClipId, val transform: ClipTransform, val animation: ClipAnimation)
     private val transformDraft = MutableStateFlow<TransformDraft?>(null)
 
     private val history = MutableStateFlow(EditHistory())
@@ -320,11 +345,10 @@ public class EditorViewModel(
             val saved = editing.pending ?: persisted
             val shown = editing.draft?.timeline ?: saved
             val mediaById = project.media.associateBy { it.id }
-            // The selected overlay is drawn by the editing canvas (live, with handles), so the player leaves it out.
-            val editedOverlay = selected?.let(::ClipId)?.takeIf { shown.findClip(it)?.overlay != null }
             // A transform being edited is rendered for real: the player applies it in place, without reloading.
-            val rendered = transformEdit?.let { saved.withTransform(it.clipId, it.transform) } ?: saved
-            val preview = previewPlanFor(rendered, project, peaks, hiddenOverlay = editedOverlay)
+            // (The selected overlay is hidden from the player while paused, without a reload: see init.)
+            val rendered = transformEdit?.let { saved.withTransform(it.clipId, it.transform, it.animation) } ?: saved
+            val preview = previewPlanFor(rendered, project, peaks)
             val tracks = tracksUi(shown, mediaById, peaks)
             Built(
                 EditorUiState.Ready(
@@ -345,7 +369,8 @@ public class EditorViewModel(
                     stickerChoices = project.media.filter { it.kind == MediaKind.IMAGE }.map {
                         StickerChoice(it.id, it.uri, it.displayName.orEmpty())
                     },
-                    pictures = picturesUi(transformEdit?.let { shown.withTransform(it.clipId, it.transform) } ?: shown, mediaById),
+                    pictures = picturesUi(transformEdit?.let { shown.withTransform(it.clipId, it.transform, it.animation) } ?: shown, mediaById),
+                    frameDurationUs = shown.frameRate.frameToUs(1),
                     saveStatus = when {
                         editing.autosave is ProjectAutosave.Status.Failed -> SaveStatus.FAILED
                         editing.autosave is ProjectAutosave.Status.Saving -> SaveStatus.SAVING
@@ -369,6 +394,17 @@ public class EditorViewModel(
         }
         .map { it.state }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), EditorUiState.Loading)
+
+    init {
+        // While paused, the canvas draws the selected overlay itself (live, with handles), so the player leaves it out.
+        // While playing, the player draws it, so a keyframed overlay moves frame-exactly with the picture.
+        viewModelScope.launch {
+            combine(selectedId, controller.state.map { it.isPlaying }.distinctUntilChanged()) { selected, playing -> selected.takeUnless { playing } }
+                .distinctUntilChanged()
+                // An ID that isn't an overlay's matches no layer, so it hides nothing.
+                .collect { selected -> controller.setHiddenOverlay(selected) }
+        }
+    }
 
     // ---- Selection ----
 
@@ -514,18 +550,24 @@ public class EditorViewModel(
      * Shows [overlay] for [clipId] at once, without saving: for changes that
      * arrive many times a second (dragging on the preview, sliders).
      * [commitOverlay] saves the latest one as a single undo step.
+     *
+     * [overlay] is the overlay as shown at the playhead [atUs], changed. On a
+     * keyframed overlay, placement changes become keyframes at the playhead
+     * ([Keyframing.recordEdit]); otherwise they change it everywhere.
      */
-    public fun previewOverlay(clipId: ClipId, overlay: Overlay) {
+    public fun previewOverlay(clipId: ClipId, overlay: Overlay, atUs: Long? = null) {
         val current = overlayDraft.value
         if (current != null && current.clipId != clipId) commitOverlay()
-        overlayDraft.value = OverlayDraft(clipId, overlay)
+        val clip = currentTimeline()?.findClip(clipId) ?: return
+        val (static, animation) = recordOverlay(clip, overlay, atUs) ?: return
+        overlayDraft.value = OverlayDraft(clipId, static, animation)
     }
 
     /** Saves the change shown by [previewOverlay], as one undoable edit. */
     public fun commitOverlay() {
         val pending = overlayDraft.value ?: return
         overlayDraft.value = null
-        execute(EditCommand.SetOverlay(pending.clipId, pending.overlay))
+        execute(EditCommand.SetOverlay(pending.clipId, pending.overlay, pending.animation))
     }
 
     /** Drops the change shown by [previewOverlay]. */
@@ -533,10 +575,22 @@ public class EditorViewModel(
         overlayDraft.value = null
     }
 
-    /** Changes [clipId]'s overlay at once, as one undoable edit (a color tap, a toggle). */
-    public fun setOverlay(clipId: ClipId, overlay: Overlay) {
+    /** Changes [clipId]'s overlay at once, as one undoable edit (a color tap, a toggle). Placement follows [previewOverlay]'s keyframe rule. */
+    public fun setOverlay(clipId: ClipId, overlay: Overlay, atUs: Long? = null) {
         overlayDraft.value = null
-        execute(EditCommand.SetOverlay(clipId, overlay))
+        val clip = currentTimeline()?.findClip(clipId) ?: return
+        val (static, animation) = recordOverlay(clip, overlay, atUs) ?: return
+        execute(EditCommand.SetOverlay(clipId, static, animation))
+    }
+
+    /** The static overlay and keyframes after [edited] (the overlay as shown at [atUs], changed) is applied. */
+    private fun recordOverlay(clip: Clip, edited: Overlay, atUs: Long?): Pair<Overlay, ClipAnimation>? {
+        val base = clip.overlay ?: return null
+        if (atUs == null) return edited to clip.animation
+        val local = keyframeTime(clip, atUs) ?: return edited to clip.animation
+        // The change is measured from what the canvas showed at the exact playhead, and keyed on the frame under it.
+        val (transform, animation) = Keyframing.recordEdit(base.transform, clip.animation, edited.transform, local, clip.localTimeOf(atUs))
+        return edited.copy(transform = transform) to animation
     }
 
     /** Moves an overlay up or down among the overlays it overlaps in time. */
@@ -551,7 +605,9 @@ public class EditorViewModel(
         val clip = currentTimeline()?.findClip(clipId) ?: return
         val overlay = clip.overlay ?: return
         val nudged = overlay.transform.let { OverlayTransform.coerced(it.centerX + DUPLICATE_OFFSET, it.centerY + DUPLICATE_OFFSET, it.scale, it.rotationDegrees, it.opacity) }
-        execute(EditCommand.AddOverlay(overlay.copy(transform = nudged), clip.mediaId, clip.startUs, clip.durationUs))
+        // The copy keeps the animation, its path nudged the same way.
+        val animation = Keyframing.offsetPosition(clip.animation, DUPLICATE_OFFSET, DUPLICATE_OFFSET)
+        execute(EditCommand.AddOverlay(overlay.copy(transform = nudged), clip.mediaId, clip.startUs, clip.durationUs, animation))
     }
 
     // ---- Clip transforms ----
@@ -562,18 +618,21 @@ public class EditorViewModel(
      * The player renders it in place. [commitTransform] saves the latest one
      * as a single undo step.
      */
-    public fun previewTransform(clipId: ClipId, transform: ClipTransform) {
+    public fun previewTransform(clipId: ClipId, transform: ClipTransform, atUs: Long? = null) {
         val current = transformDraft.value
         if (current != null && current.clipId != clipId) commitTransform()
-        if (currentTimeline()?.trackOf(clipId)?.kind != TrackKind.VIDEO) return
-        transformDraft.value = TransformDraft(clipId, transform)
+        val timeline = currentTimeline() ?: return
+        if (timeline.trackOf(clipId)?.kind != TrackKind.VIDEO) return
+        val clip = timeline.findClip(clipId) ?: return
+        val (static, animation) = recordTransform(clip, transform, atUs)
+        transformDraft.value = TransformDraft(clipId, static, animation)
     }
 
     /** Saves the change shown by [previewTransform], as one undoable edit. */
     public fun commitTransform() {
         val pending = transformDraft.value ?: return
         transformDraft.value = null
-        execute(EditCommand.SetClipTransform(pending.clipId, pending.transform))
+        execute(EditCommand.SetClipTransform(pending.clipId, pending.transform, pending.animation))
     }
 
     /** Drops the change shown by [previewTransform]. */
@@ -581,25 +640,149 @@ public class EditorViewModel(
         transformDraft.value = null
     }
 
-    /** Changes [clipId]'s transform at once, as one undoable edit (a button, a preset). */
-    public fun setTransform(clipId: ClipId, transform: ClipTransform) {
+    /**
+     * Changes [clipId]'s transform at once, as one undoable edit (a button, a
+     * preset). [transform] is the transform as shown at the playhead [atUs],
+     * changed; on a keyframed clip, placement changes become keyframes there.
+     */
+    public fun setTransform(clipId: ClipId, transform: ClipTransform, atUs: Long? = null) {
         transformDraft.value = null
-        execute(EditCommand.SetClipTransform(clipId, transform))
+        val clip = currentTimeline()?.findClip(clipId) ?: return
+        val (static, animation) = recordTransform(clip, transform, atUs)
+        execute(EditCommand.SetClipTransform(clipId, static, animation))
     }
 
-    /** Puts the clip back as it was imported: whole picture, fitted, centred, upright, opaque. */
+    /** Puts the clip back as it was imported: whole picture, fitted, centred, upright, opaque, and not animated. */
     public fun resetTransform(clipId: ClipId) {
-        setTransform(clipId, ClipTransform.DEFAULT)
+        transformDraft.value = null
+        val clip = currentTimeline()?.findClip(clipId) ?: return
+        execute(EditCommand.SetClipTransform(clipId, ClipTransform.DEFAULT, clip.animation.withoutTransform()))
     }
 
     /**
      * Centres the clip and sizes it to fit inside the canvas, or to fill it,
-     * at its current rotation and crop.
+     * at its current rotation and crop (as shown at the playhead [atUs]).
      */
-    public fun fitTransform(clipId: ClipId, mode: FitMode) {
+    public fun fitTransform(clipId: ClipId, mode: FitMode, atUs: Long? = null) {
         val picture = pictureFor(clipId) ?: return
         val settings = latestProject?.settings ?: return
-        setTransform(clipId, picture.placement(settings.canvasWidthPx, settings.canvasHeightPx).fitted(mode))
+        val shown = if (atUs != null) picture.at(atUs) else picture
+        setTransform(clipId, shown.placement(settings.canvasWidthPx, settings.canvasHeightPx).fitted(mode), atUs)
+    }
+
+    /** The static transform and keyframes after [edited] (the transform as shown at [atUs], changed) is applied. */
+    private fun recordTransform(clip: Clip, edited: ClipTransform, atUs: Long?): Pair<ClipTransform, ClipAnimation> {
+        if (atUs == null) return edited to clip.animation
+        val local = keyframeTime(clip, atUs) ?: return edited to clip.animation
+        // The change is measured from what the canvas showed at the exact playhead, and keyed on the frame under it.
+        return Keyframing.recordEdit(clip.transform, clip.animation, edited, local, clip.localTimeOf(atUs))
+    }
+
+    // ---- Keyframes ----
+    // Keyframe actions work on the "moment" at the playhead: all placement channels at one clip-local time.
+
+    /**
+     * Adds a keyframe to [clipId]'s placement at the playhead [atUs]: every
+     * channel (position, scale, rotation, opacity) holds its current value
+     * there, so nothing moves until the keyframe is edited. One undo step.
+     */
+    public fun addKeyframe(clipId: ClipId, atUs: Long) {
+        val clip = settledClip(clipId) ?: return
+        val local = keyframeTime(clip, atUs) ?: return
+        val static = staticChannels(clip) ?: return
+        execute(EditCommand.SetClipAnimation(clipId, Keyframing.addMoment(static, clip.animation, local)))
+    }
+
+    /**
+     * Deletes the keyframe at the playhead [atUs] (within half a frame) from
+     * every channel. A channel losing its last keyframe keeps that value.
+     */
+    public fun removeKeyframe(clipId: ClipId, atUs: Long) {
+        val clip = settledClip(clipId) ?: return
+        val local = momentAt(clip, atUs) ?: return
+        val static = staticChannels(clip) ?: return
+        val (values, animation) = Keyframing.removeMoment(static, clip.animation, local)
+        execute(withStatic(clip, values, animation) ?: return)
+    }
+
+    /** Sets how the keyframe at the playhead [atUs] eases toward the next one. */
+    public fun setKeyframeEasing(clipId: ClipId, atUs: Long, easing: Easing) {
+        val clip = settledClip(clipId) ?: return
+        val local = momentAt(clip, atUs) ?: return
+        execute(EditCommand.SetClipAnimation(clipId, Keyframing.setEasing(clip.animation, local, easing)))
+    }
+
+    /**
+     * Moves the keyframe at the playhead [atUs] by [frames] frames (negative
+     * is earlier), within the clip, replacing any keyframe already there.
+     * Returns its new timeline time, so the playhead can follow it, or null
+     * if nothing moved.
+     */
+    public fun nudgeKeyframe(clipId: ClipId, atUs: Long, frames: Int): Long? {
+        val clip = settledClip(clipId) ?: return null
+        val local = momentAt(clip, atUs) ?: return null
+        val rate = currentTimeline()?.frameRate ?: return null
+        val target = clip.localTimeOf(rate.frameToUs(rate.usToFrame(clip.timelineTimeOf(local), FrameRounding.NEAREST) + frames))
+        if (target < 0 || target >= clip.durationUs || target == local) return null
+        execute(EditCommand.SetClipAnimation(clipId, Keyframing.moveMoment(clip.animation, local, target)))
+        return clip.timelineTimeOf(target)
+    }
+
+    /** Removes every placement keyframe of [clipId], keeping the placement shown at the playhead [atUs]. */
+    public fun clearKeyframes(clipId: ClipId, atUs: Long) {
+        val clip = settledClip(clipId) ?: return
+        if (!clip.animation.animatesTransform) return
+        val static = staticChannels(clip) ?: return
+        val local = clip.localTimeOf(atUs).coerceIn(0, clip.durationUs - 1)
+        val shown = TransformChannel.entries.associateWith { channel ->
+            clip.animation.valueAt(channel, local)?.toFloat() ?: static.getValue(channel)
+        }
+        execute(withStatic(clip, shown, clip.animation.withoutTransform()) ?: return)
+    }
+
+    /** The clip with any change in progress saved first, so keyframe actions start from what is shown. */
+    private fun settledClip(clipId: ClipId): Clip? {
+        commitOverlay()
+        commitTransform()
+        return currentTimeline()?.findClip(clipId)
+    }
+
+    /** The keyframe moment within half a frame of the playhead [atUs], in clip-local time. */
+    private fun momentAt(clip: Clip, atUs: Long): Long? = Keyframing.momentNear(clip.animation, clip.localTimeOf(atUs), halfFrameUs())
+
+    /**
+     * The clip-local time an edit at the playhead [atUs] applies to: a
+     * keyframe within half a frame, or else the start of the frame on
+     * screen. Null outside the clip.
+     */
+    private fun keyframeTime(clip: Clip, atUs: Long): Long? {
+        if (atUs !in clip) return null
+        momentAt(clip, atUs)?.let { return it }
+        val rate = currentTimeline()?.frameRate ?: return null
+        return clip.localTimeOf(rate.snapUs(atUs, FrameRounding.FLOOR)).coerceIn(0, clip.durationUs - 1)
+    }
+
+    private fun halfFrameUs(): Long = (currentTimeline()?.frameRate?.frameToUs(1) ?: DEFAULT_FRAME_US) / 2
+
+    /** The clip's static placement channels: its overlay's, or a picture's transform. */
+    private fun staticChannels(clip: Clip): Map<TransformChannel, Float>? {
+        val overlay = clip.overlay
+        return when {
+            overlay != null -> Keyframing.channels(overlay.transform)
+            currentTimeline()?.trackOf(clip.id)?.kind == TrackKind.VIDEO -> Keyframing.channels(clip.transform)
+            else -> null
+        }
+    }
+
+    /** The command giving [clip] the static channel [values] and [animation], as one edit. */
+    private fun withStatic(clip: Clip, values: Map<TransformChannel, Float>, animation: ClipAnimation): EditCommand? {
+        val overlay = clip.overlay
+        return when {
+            overlay != null -> EditCommand.SetOverlay(clip.id, overlay.copy(transform = Keyframing.withChannels(overlay.transform, values)), animation)
+            currentTimeline()?.trackOf(clip.id)?.kind == TrackKind.VIDEO ->
+                EditCommand.SetClipTransform(clip.id, Keyframing.withChannels(clip.transform, values), animation)
+            else -> null
+        }
     }
 
     /** [clipId] as the canvas places it, with any change in progress. */
@@ -607,7 +790,7 @@ public class EditorViewModel(
         val project = latestProject ?: return null
         val timeline = currentTimeline() ?: return null
         val draft = transformDraft.value?.takeIf { it.clipId == clipId }
-        val shown = draft?.let { timeline.withTransform(it.clipId, it.transform) } ?: timeline
+        val shown = draft?.let { timeline.withTransform(it.clipId, it.transform, it.animation) } ?: timeline
         return picturesUi(shown, project.media.associateBy { it.id }, allVideoTracks = true).firstOrNull { it.clipId == clipId }
     }
 
@@ -787,6 +970,7 @@ public class EditorViewModel(
                             // The first line names the clip; the timeline shows a placeholder for empty text.
                             title = text.text.lineSequence().firstOrNull { it.isNotBlank() }.orEmpty().trim(),
                             overlay = clip.overlay,
+                            keyframeTimesUs = keyframeMarks(clip),
                         )
                     }
                     val media = mediaById[clip.mediaId ?: return@mapNotNull null] ?: return@mapNotNull null
@@ -803,10 +987,15 @@ public class EditorViewModel(
                         audio = clip.audio,
                         waveform = peaks[media.id],
                         overlay = clip.overlay,
+                        keyframeTimesUs = keyframeMarks(clip),
                     )
                 },
             )
         }
+
+    /** Placement keyframe times inside [clip], for the timeline's markers. */
+    private fun keyframeMarks(clip: Clip): List<Long> =
+        if (!clip.animation.animatesTransform) emptyList() else clip.animation.transformKeyframeTimes().filter { it in 0 until clip.durationUs }
 
     /**
      * The main track's videos and photos (or, with [allVideoTracks], those of
@@ -818,15 +1007,15 @@ public class EditorViewModel(
             track.clips.mapNotNull { clip ->
                 val media = mediaById[clip.mediaId ?: return@mapNotNull null] ?: return@mapNotNull null
                 if (media.kind == MediaKind.AUDIO) return@mapNotNull null
-                PictureUi(clip.id, clip.startUs, clip.endUs, clip.transform, media.displayWidthPx, media.displayHeightPx)
+                PictureUi(clip.id, clip.startUs, clip.endUs, clip.transform, media.displayWidthPx, media.displayHeightPx, clip.animation)
             }
         }
     }
 
-    /** [timeline] with [clipId]'s transform replaced, if it is on a video track. */
-    private fun Timeline.withTransform(clipId: ClipId, transform: ClipTransform): Timeline {
+    /** [timeline] with [clipId]'s transform and keyframes replaced, if it is on a video track. */
+    private fun Timeline.withTransform(clipId: ClipId, transform: ClipTransform, animation: ClipAnimation): Timeline {
         val track = trackOf(clipId)?.takeIf { it.kind == TrackKind.VIDEO } ?: return this
-        return withTrack(track.copy(clips = track.clips.map { if (it.id == clipId) it.copy(transform = transform) else it }))
+        return withTrack(track.copy(clips = track.clips.map { if (it.id == clipId) it.copy(transform = transform, animation = animation) else it }))
     }
 
     /** Overlays bottom layer first (the reverse of the track list), with the change in progress applied. */
@@ -835,11 +1024,13 @@ public class EditorViewModel(
             track.clips.mapNotNull { clip ->
                 val overlay = clip.overlay ?: return@mapNotNull null
                 val image = clip.mediaId?.let { mediaById[it] ?: return@mapNotNull null }
+                val draft = edit?.takeIf { it.clipId == clip.id }
                 OverlayUi(
                     clipId = clip.id,
                     startUs = clip.startUs,
                     endUs = clip.endUs,
-                    overlay = edit?.takeIf { it.clipId == clip.id }?.overlay ?: overlay,
+                    overlay = draft?.overlay ?: overlay,
+                    animation = draft?.animation ?: clip.animation,
                     imageUri = image?.uri,
                     imageWidthPx = image?.displayWidthPx ?: 0,
                     imageHeightPx = image?.displayHeightPx ?: 0,
@@ -853,6 +1044,9 @@ public class EditorViewModel(
 
         /** A duplicate sits this far (a fraction of the canvas) right of and below the original. */
         const val DUPLICATE_OFFSET = 0.03f
+
+        /** One frame at 30 fps, for when no timeline is loaded yet. */
+        const val DEFAULT_FRAME_US = 33_334L
 
         /** New text: white, with a soft shadow so it reads on light and dark footage. */
         val DEFAULT_TEXT_STYLE = TextStyle(shadow = TextShadow(Argb.BLACK.withAlpha(140), blurFraction = 0.06f, offsetXFraction = 0.02f, offsetYFraction = 0.02f))
@@ -885,16 +1079,16 @@ public fun interface ImageImporter {
  * - Rendered at the canvas's shape, at most [PREVIEW_SHORT_SIDE_PX] on the
  *   short side, to keep the preview light. Export uses the size chosen there.
  * - An audio-only timeline still plays (export would refuse it).
- * - [hiddenOverlay], the overlay being edited, is left out: the editing
- *   canvas draws it live with the same painter, so a drag doesn't reload
- *   the player.
+ * - Every overlay is in the plan, with its keyframes. While paused, the one
+ *   being edited is hidden from the player without a reload
+ *   ([PreviewController.setHiddenOverlay]); the editing canvas draws it
+ *   with the same painter.
  * - Returns null when there's nothing to play, or a file is unavailable.
  */
 internal fun previewPlanFor(
     timeline: Timeline,
     project: Project,
     waveforms: Map<MediaId, Waveform>,
-    hiddenOverlay: ClipId? = null,
 ): Pair<TrackKind, PreviewPlan>? {
     val settings = project.settings
     val size = ExportOptions.resolutionsFor(settings.canvasWidthPx, settings.canvasHeightPx)
@@ -907,8 +1101,7 @@ internal fun previewPlanFor(
         waveforms = waveforms::get,
         requireVideo = false,
     )
-    val planned = (result as? ExportPlanResult.Ready)?.plan ?: return null
-    val plan = if (hiddenOverlay == null) planned else planned.copy(overlays = planned.overlays.filterNot { it.clipId == hiddenOverlay.value })
+    val plan = (result as? ExportPlanResult.Ready)?.plan ?: return null
     return (if (plan.video.isNotEmpty()) TrackKind.VIDEO else TrackKind.AUDIO) to PreviewPlan.forTimeline(plan)
 }
 

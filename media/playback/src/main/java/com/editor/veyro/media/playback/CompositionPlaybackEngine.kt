@@ -8,9 +8,11 @@ import androidx.media3.common.Player
 import androidx.media3.common.util.ExperimentalApi
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.transformer.CompositionPlayer
+import com.editor.veyro.core.model.animation.ClipAnimation
 import com.editor.veyro.core.model.transform.ClipTransform
 import com.editor.veyro.core.timeline.export.ExportPlan
 import com.editor.veyro.media.render.CompositionFactory
+import com.editor.veyro.media.render.overlay.LiveOverlays
 import com.editor.veyro.media.render.transform.LiveTransform
 
 /**
@@ -27,10 +29,12 @@ import com.editor.veyro.media.render.transform.LiveTransform
  * - Requests audio focus. (CompositionPlayer has no "becoming noisy" option, so
  *   unplugging headphones doesn't pause it.)
  * - Reports the whole timeline as one item.
- * - Clip transforms are live ([updateInPlace]): a plan that differs only in
- *   transforms updates the running composition's [LiveTransform]s and, when
- *   paused, redraws the current frame, so moving or cropping a clip doesn't
- *   reload the player. This uses CompositionPlayer's replayable frame cache
+ * - Clip transforms, keyframes and overlays are live ([updateInPlace]): a
+ *   plan that differs only in those updates the running composition's
+ *   [LiveTransform]s and [LiveOverlays] and, when paused, redraws the
+ *   current frame, so moving, cropping or animating a clip, or editing a
+ *   text, doesn't reload the player. [setHiddenOverlay] works the same
+ *   way. This uses CompositionPlayer's replayable frame cache
  *   (experimental in Media3 1.11). If a redraw isn't possible, the change
  *   shows on the next frame played or the next reload.
  */
@@ -57,6 +61,8 @@ public class CompositionPlaybackEngine(context: Context) : PlaybackEngine {
     /** The plan playing now, and the transforms its composition reads every frame. */
     private var loaded: ExportPlan? = null
     private var transforms: List<LiveTransform> = emptyList()
+    private var overlays = LiveOverlays(emptyList())
+    private var hiddenOverlay: String? = null
 
     private val playerListener = object : Player.Listener {
         override fun onEvents(player: Player, events: Player.Events) {
@@ -98,29 +104,46 @@ public class CompositionPlaybackEngine(context: Context) : PlaybackEngine {
     override fun loadTimeline(plan: ExportPlan, startPositionMs: Long) {
         planHasVideo = plan.video.isNotEmpty()
         loaded = plan
-        transforms = plan.video.map { LiveTransform(it.transform) }
-        compositionPlayer.setComposition(CompositionFactory.forPreview(plan, appContext, transforms), startPositionMs.coerceAtLeast(0))
+        transforms = CompositionFactory.fixedTransforms(plan)
+        overlays = LiveOverlays(plan.overlays).also { it.hiddenClipId = hiddenOverlay }
+        compositionPlayer.setComposition(CompositionFactory.forPreview(plan, appContext, transforms, overlays), startPositionMs.coerceAtLeast(0))
         compositionPlayer.prepare()
     }
 
     override fun updateInPlace(plan: ExportPlan): Boolean {
         val current = loaded ?: return false
-        if (compositionPlayer.playerError != null || plan.withoutTransforms() != current.withoutTransforms()) return false
-        plan.video.forEachIndexed { index, segment -> transforms[index].value = segment.transform }
+        if (compositionPlayer.playerError != null || plan.withoutLiveParts() != current.withoutLiveParts()) return false
+        // The overlay effect exists only when there are overlays (and switches HDR tone-mapping), so that has to stay the same.
+        if (plan.overlays.isEmpty() != current.overlays.isEmpty()) return false
+        plan.segmentTransforms().forEachIndexed { index, transform -> transforms[index].value = transform }
+        overlays.layers = plan.overlays
         loaded = plan
-        if (!compositionPlayer.isPlaying) {
-            try {
-                compositionPlayer.experimentalRedrawLastFrame()
-            } catch (e: IllegalStateException) {
-                // No frame to redraw yet; the next rendered frame uses the new transforms.
-            } catch (e: UnsupportedOperationException) {
-                // Same.
-            }
-        }
+        redrawIfPaused()
         return true
     }
 
-    private fun ExportPlan.withoutTransforms(): ExportPlan = copy(video = video.map { it.copy(transform = ClipTransform.DEFAULT) })
+    override fun setHiddenOverlay(clipId: String?) {
+        if (hiddenOverlay == clipId) return
+        hiddenOverlay = clipId
+        overlays.hiddenClipId = clipId
+        redrawIfPaused()
+    }
+
+    /** Shows a change on the paused frame at once. While playing, the next frame shows it anyway. */
+    private fun redrawIfPaused() {
+        if (compositionPlayer.isPlaying || loaded == null) return
+        try {
+            compositionPlayer.experimentalRedrawLastFrame()
+        } catch (e: IllegalStateException) {
+            // No frame to redraw yet; the next rendered frame uses the new values.
+        } catch (e: UnsupportedOperationException) {
+            // Same.
+        }
+    }
+
+    /** The plan without what the running composition reads live: placement, keyframes and overlays. */
+    private fun ExportPlan.withoutLiveParts(): ExportPlan =
+        copy(video = video.map { it.copy(transform = ClipTransform.DEFAULT, animation = ClipAnimation.NONE) }, overlays = emptyList())
 
     override fun play() {
         compositionPlayer.play()

@@ -38,7 +38,7 @@ class ExportPlannerTest {
 
     private fun ref(id: String, kind: MediaKind, durationUs: Long, withAudio: Boolean = false) = MediaRef(
         id = MediaId(id), uri = "content://$id", kind = kind, displayName = "$id.file", mimeType = null,
-        durationUs = if (kind == MediaKind.IMAGE) 0 else durationUs, widthPx = 1_920, heightPx = 1_080,
+        durationUs = if (kind == MediaKind.IMAGE) 0 else durationUs, widthPx = if (kind == MediaKind.AUDIO) 0 else 1_920, heightPx = if (kind == MediaKind.AUDIO) 0 else 1_080,
         rotationDegrees = 0, sizeBytes = null,
         audio = if (withAudio || kind == MediaKind.AUDIO) AudioTrackInfo("audio/mp4a-latm", 48_000, 2, null) else null,
     )

@@ -918,4 +918,31 @@ public object VeyroIcons {
             }.also { _alignRight = it }
         }
     private var _alignRight: ImageVector? = null
+
+    /** A keyframe: a filled diamond. */
+    public val Keyframe: ImageVector
+        get() {
+            _keyframe?.let { return it }
+            return materialIcon(name = "Veyro.Keyframe") {
+                addPath(
+                    pathData = addPathNodes("M12,2L22,12L12,22L2,12Z"),
+                    fill = SolidColor(Color.Black),
+                )
+            }.also { _keyframe = it }
+        }
+    private var _keyframe: ImageVector? = null
+
+    /** No keyframe here yet: a diamond outline. */
+    public val KeyframeOutline: ImageVector
+        get() {
+            _keyframeOutline?.let { return it }
+            return materialIcon(name = "Veyro.KeyframeOutline") {
+                addPath(
+                    // Outer diamond clockwise, inner counter-clockwise, so the inside stays empty.
+                    pathData = addPathNodes("M12,2L22,12L12,22L2,12ZM12,5L5,12L12,19L19,12Z"),
+                    fill = SolidColor(Color.Black),
+                )
+            }.also { _keyframeOutline = it }
+        }
+    private var _keyframeOutline: ImageVector? = null
 }

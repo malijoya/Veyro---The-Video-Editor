@@ -53,7 +53,7 @@ class ClipTransformEditTest {
     private fun rejected(t: Timeline, command: EditCommand) = (TimelineEditor.apply(t, command, context) as EditResult.Rejected).reason
 
     @Test
-    fun `videos and photos take a transform; nothing else changes`() {
+    fun `videos and photos take a transform, nothing else changes`() {
         val before = timeline()
         val video = applied(before, EditCommand.SetClipTransform(ClipId("V"), moved))
         assertEquals(moved, video.findClip(ClipId("V"))!!.transform)
@@ -82,7 +82,7 @@ class ClipTransformEditTest {
         val trimmed = applied(split, EditCommand.TrimEnd(main[0].id, sec))
         assertEquals(moved, trimmed.findClip(main[0].id)!!.transform)
         // Reordering on the main track moves the clip with its transform.
-        val reordered = applied(trimmed, EditCommand.Move(ClipId("P"), 0))
+        val reordered = applied(trimmed, EditCommand.Move(ClipId("P"), -2 * sec)) // Dropped before the first clip.
         assertEquals(ClipId("P"), reordered.mainTrack!!.clips.first().id)
         assertEquals(ClipTransform.DEFAULT, reordered.mainTrack!!.clips.first().transform)
         assertEquals(moved, reordered.findClip(main[0].id)!!.transform)

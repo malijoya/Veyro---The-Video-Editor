@@ -1,5 +1,7 @@
 package com.editor.veyro.feature.editor
 
+import com.editor.veyro.core.model.animation.ClipAnimation
+import com.editor.veyro.core.model.animation.Easing
 import com.editor.veyro.core.model.audio.TrackAudio
 import com.editor.veyro.core.model.audio.ClipAudio
 import com.editor.veyro.core.model.overlay.Overlay
@@ -13,6 +15,8 @@ import com.editor.veyro.feature.editor.overlay.OverlayCanvas
 import com.editor.veyro.feature.editor.overlay.OverlayControls
 import com.editor.veyro.feature.editor.overlay.PictureEditing
 import com.editor.veyro.feature.editor.overlay.StickerSheet
+import com.editor.veyro.feature.editor.keyframe.KeyframeActions
+import com.editor.veyro.feature.editor.keyframe.KeyframeBar
 import com.editor.veyro.feature.editor.transform.TransformActions
 import com.editor.veyro.feature.editor.transform.TransformControls
 import com.editor.veyro.feature.editor.transform.TransformTab
@@ -61,6 +65,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.structuralEqualityPolicy
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -166,16 +171,31 @@ public fun EditorRoute(viewModel: EditorViewModel, onBack: () -> Unit, onExport:
                 viewModel.controller.pause()
                 viewModel.importSticker(uri, viewport.playheadUs)
             },
-            onPreviewOverlay = viewModel::previewOverlay,
+            // Placement edits happen at the playhead: on a keyframed clip they become keyframes there.
+            onPreviewOverlay = { id, overlay -> viewModel.previewOverlay(id, overlay, viewport.playheadUs) },
             onCommitOverlay = viewModel::commitOverlay,
-            onSetOverlay = viewModel::setOverlay,
+            onSetOverlay = { id, overlay -> viewModel.setOverlay(id, overlay, viewport.playheadUs) },
             onArrangeLayer = viewModel::arrangeLayer,
             onDuplicateOverlay = viewModel::duplicateOverlay,
-            onPreviewTransform = viewModel::previewTransform,
+            onPreviewTransform = { id, transform -> viewModel.previewTransform(id, transform, viewport.playheadUs) },
             onCommitTransform = viewModel::commitTransform,
-            onSetTransform = viewModel::setTransform,
-            onFitTransform = viewModel::fitTransform,
+            onSetTransform = { id, transform -> viewModel.setTransform(id, transform, viewport.playheadUs) },
+            onFitTransform = { id, mode -> viewModel.fitTransform(id, mode, viewport.playheadUs) },
             onResetTransform = viewModel::resetTransform,
+            onAddKeyframe = { id ->
+                viewModel.controller.pause()
+                viewModel.addKeyframe(id, viewport.playheadUs)
+            },
+            onRemoveKeyframe = { id -> viewModel.removeKeyframe(id, viewport.playheadUs) },
+            onKeyframeEasing = { id, easing -> viewModel.setKeyframeEasing(id, viewport.playheadUs, easing) },
+            onNudgeKeyframe = { id, frames ->
+                // The playhead follows the keyframe, so it stays selected.
+                viewModel.nudgeKeyframe(id, viewport.playheadUs, frames)?.let { timeUs ->
+                    viewport.scrollToTime(timeUs)
+                    viewModel.controller.seekTo(timeUs)
+                }
+            },
+            onClearKeyframes = { id -> viewModel.clearKeyframes(id, viewport.playheadUs) },
         ),
     )
 }
@@ -209,6 +229,11 @@ internal class EditActions(
     val onSetTransform: (ClipId, ClipTransform) -> Unit = { _, _ -> },
     val onFitTransform: (ClipId, FitMode) -> Unit = { _, _ -> },
     val onResetTransform: (ClipId) -> Unit = {},
+    val onAddKeyframe: (ClipId) -> Unit = {},
+    val onRemoveKeyframe: (ClipId) -> Unit = {},
+    val onKeyframeEasing: (ClipId, Easing) -> Unit = { _, _ -> },
+    val onNudgeKeyframe: (ClipId, Int) -> Unit = { _, _ -> },
+    val onClearKeyframes: (ClipId) -> Unit = {},
 )
 
 /**
@@ -408,6 +433,7 @@ private fun EditorContent(
                         canvasHeightPx = state.canvasHeightPx,
                         playheadUs = { viewport.playheadUs },
                         enabled = !state.isDragging,
+                        playing = playback.isPlaying,
                         selectionDescription = overlayDescription,
                         onSelect = { id ->
                             onScrubStart() // Editing pauses playback.
@@ -474,6 +500,7 @@ private fun EditorContent(
             onTextFocused = { focusTextOf = null },
             transformTab = transformTab,
             onTransformTab = { transformTab = it },
+            playheadUs = { viewport.playheadUs },
         )
     }
 
@@ -534,7 +561,8 @@ private fun PreviewStage(
             tint = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.size(64.dp),
         )
-        null -> Text(
+        // The preview is never "an overlay track": overlays need a picture under them.
+        TrackKind.OVERLAY, null -> Text(
             stringResource(R.string.editor_nothing_to_preview),
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             style = MaterialTheme.typography.bodyMedium,
@@ -651,6 +679,32 @@ private fun EditToolbar(state: EditorUiState.Ready, actions: EditActions, onAddT
     }
 }
 
+/**
+ * The keyframe bar, in its own recomposition scope: it follows the playhead
+ * (which keyframe is selected, what comes before and after), so only this
+ * part recomposes as the playhead moves.
+ */
+@Composable
+private fun KeyframeSection(
+    animation: ClipAnimation,
+    range: Pair<Long, Long>,
+    playheadUs: () -> Long,
+    frameDurationUs: Long,
+    enabled: Boolean,
+    actions: KeyframeActions,
+) {
+    KeyframeBar(
+        animation = animation,
+        clipStartUs = range.first,
+        clipEndUs = range.second,
+        playheadUs = playheadUs(),
+        frameDurationUs = frameDurationUs,
+        enabled = enabled,
+        actions = actions,
+        modifier = Modifier.padding(top = Spacing.xs),
+    )
+}
+
 /** Details of the selected clip, and a plain note on which features are still to come. */
 @Composable
 private fun SelectionBar(
@@ -663,11 +717,18 @@ private fun SelectionBar(
     onTextFocused: () -> Unit = {},
     transformTab: TransformTab? = null,
     onTransformTab: (TransformTab?) -> Unit = {},
+    playheadUs: () -> Long = { 0L },
 ) {
     val clip = state.selectedClip
     val track = state.selectedTrack
-    val overlay = state.selectedOverlay
-    val picture = state.selectedPicture
+    // The panels show and edit the clip as it is at the playhead (its keyframes evaluated). They recompose only when
+    // that changes, not on every playhead move.
+    val savedOverlay = state.selectedOverlay
+    val savedPicture = state.selectedPicture
+    val shownOverlay by remember(savedOverlay) { derivedStateOf(structuralEqualityPolicy()) { savedOverlay?.at(playheadUs()) } }
+    val shownPicture by remember(savedPicture) { derivedStateOf(structuralEqualityPolicy()) { savedPicture?.at(playheadUs()) } }
+    val overlay = shownOverlay
+    val picture = shownPicture
     // The sound panel opens on demand, so the preview keeps its room on small screens.
     var soundOpen by rememberSaveable { mutableStateOf(false) }
     Surface(color = MaterialTheme.colorScheme.surfaceContainer, modifier = Modifier.fillMaxWidth()) {
@@ -719,6 +780,26 @@ private fun SelectionBar(
                     IconButton(onClick = onClearSelection) {
                         Icon(Icons.Filled.Close, contentDescription = stringResource(R.string.editor_clear_selection))
                     }
+                }
+                val animated = savedOverlay?.let { Triple(it.clipId, it.animation, it.startUs to it.endUs) }
+                    ?: savedPicture?.let { Triple(it.clipId, it.animation, it.startUs to it.endUs) }
+                if (animated != null && (savedOverlay != null || transformTab != null)) {
+                    val (id, animation, range) = animated
+                    KeyframeSection(
+                        animation = animation,
+                        range = range,
+                        playheadUs = playheadUs,
+                        frameDurationUs = state.frameDurationUs,
+                        enabled = !state.isDragging,
+                        actions = KeyframeActions(
+                            onAdd = { actions.onAddKeyframe(id) },
+                            onRemove = { actions.onRemoveKeyframe(id) },
+                            onJumpTo = onJumpTo,
+                            onEasing = { actions.onKeyframeEasing(id, it) },
+                            onNudge = { actions.onNudgeKeyframe(id, it) },
+                            onClear = { actions.onClearKeyframes(id) },
+                        ),
+                    )
                 }
                 if (overlay != null) {
                     OverlayControls(

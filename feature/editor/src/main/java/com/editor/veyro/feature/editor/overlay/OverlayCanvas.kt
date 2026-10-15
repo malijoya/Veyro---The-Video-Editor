@@ -73,11 +73,16 @@ internal class PictureEditing(
 /**
  * The editing layer over the preview, the size of the canvas on screen.
  *
+ * Keyframed overlays and pictures are shown, hit-tested and edited as they
+ * are at the playhead ([OverlayUi.at], [PictureUi.at]: the evaluation the
+ * render uses), so a gesture starts from what is on screen. The editor
+ * turns changes on a keyframed clip into keyframes at the playhead.
+ *
  * All positions are converted at once from screen pixels to canvas pixels
  * (dividing by the canvas's size on screen) and stored as fractions of the
  * canvas, so nothing saved depends on this screen.
  *
- * The player renders every overlay except the selected one. This layer
+ * While paused, the player renders every overlay except the selected one. This layer
  * draws the selected one itself, with the same [OverlayPainter] the player
  * and export use, scaled from canvas pixels to the screen, so a change shows
  * on the very next frame without reloading the player. It also draws the
@@ -109,6 +114,8 @@ internal fun OverlayCanvas(
     canvasHeightPx: Int,
     playheadUs: () -> Long,
     enabled: Boolean,
+    /** While playing, the player draws the selected overlay itself (frame-exact), so this layer draws no selection. */
+    playing: Boolean,
     selectionDescription: String,
     onSelect: (ClipId?) -> Unit,
     onChange: (ClipId, Overlay) -> Unit,
@@ -131,6 +138,7 @@ internal fun OverlayCanvas(
     val currentSelected by rememberUpdatedState(selected)
     val currentPictures by rememberUpdatedState(pictureEditing)
     val currentEnabled by rememberUpdatedState(enabled)
+    val currentPlaying by rememberUpdatedState(playing)
     val select by rememberUpdatedState(onSelect)
     val change by rememberUpdatedState(onChange)
     val commit by rememberUpdatedState(onCommit)
@@ -173,7 +181,8 @@ internal fun OverlayCanvas(
                     val nowUs = playheadUs()
                     val point = CanvasPoint(down.position.x / k, down.position.y / k)
                     val pictures = currentPictures
-                    val activePicture = pictures?.selected?.takeIf { nowUs in it }
+                    // Everything as it is at the playhead, keyframes evaluated.
+                    val activePicture = pictures?.selected?.takeIf { nowUs in it }?.at(nowUs)
 
                     // ---- Crop mode: only the selected picture's crop frame responds. ----
                     if (pictures != null && pictures.cropMode && activePicture != null) {
@@ -206,7 +215,7 @@ internal fun OverlayCanvas(
                         return@awaitEachGesture
                     }
 
-                    val active = currentSelected?.takeIf { nowUs in it }
+                    val active = currentSelected?.takeIf { nowUs in it }?.at(nowUs)
                     val handle = active?.let { boxOf(it).corners[2] }?.let { Offset(it.x * k, it.y * k) }
                     val onHandle = handle != null && (down.position - handle).getDistance() <= handleRadiusPx * 2
                     val pictureHandle = activePicture?.let { placementOf(it).corners[2] }?.let { Offset(it.x * k, it.y * k) }
@@ -216,7 +225,7 @@ internal fun OverlayCanvas(
                         onHandle -> active
                         active != null && boxOf(active).contains(point, slop = handleRadiusPx / k) -> active
                         // The topmost visible overlay under the finger.
-                        else -> currentOverlays.lastOrNull { nowUs in it && boxOf(it).contains(point) }
+                        else -> currentOverlays.lastOrNull { nowUs in it && boxOf(it.at(nowUs)).contains(point) }?.at(nowUs)
                     }
 
                     if (target == null) {
@@ -224,7 +233,7 @@ internal fun OverlayCanvas(
                         val picture = when {
                             onPictureHandle -> activePicture
                             pictures == null -> null
-                            else -> pictures.pictures.firstOrNull { nowUs in it }?.takeIf { placementOf(it).contains(point) }
+                            else -> pictures.pictures.firstOrNull { nowUs in it }?.at(nowUs)?.takeIf { placementOf(it).contains(point) }
                         }
                         if (picture == null) {
                             // Empty space: a tap (without a drag) clears the selection.
@@ -348,10 +357,12 @@ internal fun OverlayCanvas(
     ) {
         val k = size.width / canvasWidthPx
         val now = playheadUs()
+        // While playing, the player draws everything; frames and handles would only trail behind.
+        if (currentPlaying) return@Canvas
 
         // ---- The selected video or photo: drawn by the player; here only its frame. ----
         val editing = pictureEditing
-        val picture = editing?.selected?.takeIf { now in it }
+        val picture = editing?.selected?.takeIf { now in it }?.at(now)
         if (editing != null && picture != null) {
             val placement = placementOf(picture)
             if (editing.cropMode) {
@@ -371,9 +382,8 @@ internal fun OverlayCanvas(
             drawGuides(guides, Offset(placement.anchor.x * k, placement.anchor.y * k), picture.transform.rotationDegrees, guides.scale)
         }
 
-        // ---- The selected overlay: drawn here, live, over the player's frame. ----
-        val overlay = selected ?: return@Canvas
-        if (now !in overlay) return@Canvas
+        // ---- The selected overlay: drawn here, live, over the player's frame (the player leaves it out while paused). ----
+        val overlay = selected?.takeIf { now in it }?.at(now) ?: return@Canvas
         drawIntoCanvas { canvas ->
             val native = canvas.nativeCanvas
             native.save()

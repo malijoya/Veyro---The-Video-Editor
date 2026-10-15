@@ -1,5 +1,6 @@
 package com.editor.veyro.core.model.timeline
 
+import com.editor.veyro.core.model.animation.ClipAnimation
 import com.editor.veyro.core.model.audio.AudioRole
 import com.editor.veyro.core.model.audio.ClipAudio
 import com.editor.veyro.core.model.audio.TrackAudio
@@ -57,6 +58,10 @@ public enum class TrackKind {
  *
  * [mediaId] is the source file. Only text overlays have none: their content
  * is the text itself.
+ *
+ * Clip-local time is time since the clip's first frame:
+ * `localUs = timelineUs - startUs` ([localTimeOf], [timelineTimeOf]).
+ * Keyframes ([animation]) are stored in it.
  */
 public data class Clip(
     val id: ClipId,
@@ -76,6 +81,12 @@ public data class Clip(
      * anything but the default; overlays carry their own placement.
      */
     val transform: ClipTransform = ClipTransform.DEFAULT,
+    /**
+     * Keyframes over clip-local time: placement channels (on video and
+     * overlay tracks) and effect parameters. Empty means static. See
+     * [ClipAnimation] for the time semantics.
+     */
+    val animation: ClipAnimation = ClipAnimation.NONE,
 ) {
     init {
         require((mediaId == null) == (overlay?.content is OverlayContent.Text)) {
@@ -85,6 +96,7 @@ public data class Clip(
         require(sourceInUs >= 0) { "sourceInUs must not be negative" }
         require(durationUs > 0) { "durationUs must be positive" }
         require(effects.map { it.id }.toSet().size == effects.size) { "Effect IDs must be unique within a clip" }
+        require(effects.map { it.id }.containsAll(animation.effectIds)) { "Clip ${id.value}: animated parameters must belong to the clip's effects" }
     }
 
     val endUs: Long get() = startUs + durationUs
@@ -94,13 +106,21 @@ public data class Clip(
 
     /** Whether [timeUs] falls in `[startUs, endUs)`. */
     public operator fun contains(timeUs: Long): Boolean = timeUs >= startUs && timeUs < endUs
+
+    /** Clip-local time (since the clip's first frame) of timeline time [timelineUs]. */
+    public fun localTimeOf(timelineUs: Long): Long = Math.subtractExact(timelineUs, startUs)
+
+    /** Timeline time of clip-local time [localUs]. */
+    public fun timelineTimeOf(localUs: Long): Long = Math.addExact(startUs, localUs)
 }
 
 /**
  * An effect attached to a clip, in a portable form: a [type] name and numeric
  * [params]. The project format stores effects now. Rendering them and an
- * effects UI come with the effects milestone (M7), so for now effects are
- * only saved, loaded and carried through edits.
+ * effects UI come with the effects milestone, so for now effects are
+ * only saved, loaded and carried through edits. Their parameters can be
+ * keyframed ([ClipAnimation], `EffectParam`) and evaluated with
+ * [ClipAnimation.effectsAt], ready for the renderer.
  */
 public data class ClipEffect(
     val id: String,
@@ -137,6 +157,7 @@ public data class Track(
         clips.forEach { clip ->
             require((clip.overlay != null) == (kind == TrackKind.OVERLAY)) { "Clip ${clip.id.value} doesn't belong on a ${kind.name} track" }
             require(kind == TrackKind.VIDEO || clip.transform.isDefault) { "Clip ${clip.id.value}: only pictures on video tracks have a transform" }
+            require(kind != TrackKind.AUDIO || !clip.animation.animatesTransform) { "Clip ${clip.id.value}: sound has no placement to animate" }
         }
     }
 

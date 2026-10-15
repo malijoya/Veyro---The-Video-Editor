@@ -8,17 +8,29 @@ import androidx.media3.effect.GlMatrixTransformation
 import androidx.media3.effect.RgbMatrix
 import com.editor.veyro.core.model.transform.ClipPlacement
 import com.editor.veyro.core.model.transform.ClipTransform
+import com.editor.veyro.core.timeline.export.SegmentTransform
 
 /**
- * A clip's transform as the renderer reads it, frame by frame. The export
- * sets it once. The editor preview changes it while a gesture is in
- * progress, so the real render follows the finger without rebuilding the
- * composition. Thread-safe: written on the main thread, read on Media3's GL
- * thread.
+ * A clip's placement over time as the renderer reads it: for each frame,
+ * [at] evaluates the clip's transform and keyframes at the frame's
+ * presentation time. The export sets it once. The editor preview replaces it
+ * while a gesture is in progress, so the real render follows the finger
+ * without rebuilding the composition. Thread-safe: written on the main
+ * thread, read on Media3's GL thread.
+ *
+ * Media3 passes per-item effects the frame's composition time, the same
+ * time the composition-level overlay sees: with one picture sequence, both
+ * run in the same frame processor, after the input stage adds the item's
+ * offset in the sequence (checked in the 1.11.1 sources,
+ * `ExternalTextureManager`). Composition time is timeline time, because the
+ * main track is packed from 0.
  */
-public class LiveTransform(initial: ClipTransform) {
+public class LiveTransform(initial: SegmentTransform) {
     @Volatile
-    public var value: ClipTransform = initial
+    public var value: SegmentTransform = initial
+
+    /** The placement for the frame at composition time [presentationTimeUs]. */
+    public fun at(presentationTimeUs: Long): ClipTransform = value.at(presentationTimeUs)
 }
 
 /**
@@ -35,6 +47,10 @@ public class LiveTransform(initial: ClipTransform) {
  *
  * The output is always the canvas size ([canvasWidthPx] × [canvasHeightPx]),
  * cleared to black where the picture doesn't reach.
+ *
+ * Each stage evaluates the placement at the frame's own presentation time,
+ * so keyframed clips animate frame-exactly and identically in preview and
+ * export, never by a clock.
  */
 @OptIn(UnstableApi::class)
 public object ClipTransformEffects {
@@ -60,7 +76,7 @@ internal class CropStage(private val transform: LiveTransform) : GlMatrixTransfo
     }
 
     override fun getGlMatrixArray(presentationTimeUs: Long): FloatArray =
-        ClipPlacement(transform.value, width, height, width, height).cropMatrix()
+        ClipPlacement(transform.at(presentationTimeUs), width, height, width, height).cropMatrix()
 
     // Never a no-op: the preview may change the crop after Media3 has built the pipeline.
     override fun isNoOp(inputWidth: Int, inputHeight: Int): Boolean = false
@@ -83,7 +99,7 @@ internal class PlacementStage(
     }
 
     override fun getGlMatrixArray(presentationTimeUs: Long): FloatArray =
-        ClipPlacement(transform.value, sourceWidth, sourceHeight, canvasWidthPx, canvasHeightPx).placementMatrix()
+        ClipPlacement(transform.at(presentationTimeUs), sourceWidth, sourceHeight, canvasWidthPx, canvasHeightPx).placementMatrix()
 
     override fun isNoOp(inputWidth: Int, inputHeight: Int): Boolean = false
 }
@@ -98,7 +114,7 @@ internal class PlacementStage(
 internal class OpacityStage(private val transform: LiveTransform) : RgbMatrix {
 
     override fun getMatrix(presentationTimeUs: Long, useHdr: Boolean): FloatArray {
-        val o = transform.value.opacity
+        val o = transform.at(presentationTimeUs).opacity
         return floatArrayOf(
             o, 0f, 0f, 0f,
             0f, o, 0f, 0f,

@@ -50,6 +50,7 @@ public class PreviewController(
     private var savedPlayWhenReady = false
     private var pollJob: Job? = null
     private var released = false
+    private var hiddenOverlay: String? = null
 
     public val isAttached: Boolean get() = engine != null
 
@@ -82,10 +83,21 @@ public class PreviewController(
         engine?.let { load(it, newPlan, positionUs = position, playWhenReady = false) }
     }
 
+    /**
+     * Leaves the overlay of clip [clipId] out of the player's picture (null
+     * shows every overlay), without reloading: the editor draws the overlay
+     * being edited itself while paused. Kept across reloads and re-attaches.
+     */
+    public fun setHiddenOverlay(clipId: String?) {
+        hiddenOverlay = clipId
+        engine?.setHiddenOverlay(clipId)
+    }
+
     public fun attach() {
         if (released || engine != null) return
         val created = engineFactory()
         engine = created
+        created.setHiddenOverlay(hiddenOverlay)
         created.setListener(::refresh)
         _player.value = created.player
         plan?.let { load(created, it, savedPositionUs, savedPlayWhenReady) }

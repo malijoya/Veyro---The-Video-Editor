@@ -10,6 +10,13 @@ import com.editor.veyro.core.model.overlay.Overlay
 import com.editor.veyro.core.model.overlay.OverlayContent
 import com.editor.veyro.core.model.overlay.OverlayFont
 import com.editor.veyro.core.model.overlay.OverlayTransform
+import com.editor.veyro.core.model.animation.AnimatedProperty
+import com.editor.veyro.core.model.animation.ClipAnimation
+import com.editor.veyro.core.model.animation.Easing
+import com.editor.veyro.core.model.animation.EffectParam
+import com.editor.veyro.core.model.animation.Keyframe
+import com.editor.veyro.core.model.animation.KeyframeTrack
+import com.editor.veyro.core.model.animation.TransformChannel
 import com.editor.veyro.core.model.overlay.TextAlign
 import com.editor.veyro.core.model.overlay.TextBackground
 import com.editor.veyro.core.model.overlay.TextOutline
@@ -80,11 +87,15 @@ import kotlinx.serialization.json.jsonPrimitive
  *   rotation, anchor, crop, crop shape lock, fit or fill, opacity), as
  *   fractions of the canvas and of the upright source. An optional field on
  *   the v4 shape; absent means the default (whole picture, fitted, centred).
+ * - v8 (2026-10-15): clip keyframes ("animation"): per property (placement
+ *   channel or effect parameter), keyframes with a clip-local time in µs
+ *   (since the clip's first frame), a value and the easing to the next
+ *   keyframe. An optional field on the v4 shape; absent means static.
  */
 
-internal const val CURRENT_SCHEMA_VERSION = 7
+internal const val CURRENT_SCHEMA_VERSION = 8
 
-// ======================= v4 / v5 / v6 / v7 (current) =======================
+// ======================= v4 / v5 / v6 / v7 / v8 (current) =======================
 
 @Serializable
 internal data class ProjectDocumentV4(
@@ -188,6 +199,34 @@ internal data class ClipDocumentV4(
     val overlay: OverlayDocumentV6? = null,
     /** v7. Video tracks only. Absent means the default transform. */
     val transform: TransformDocumentV7? = null,
+    /** v8. Absent or empty means no keyframes. */
+    val animation: List<PropertyAnimationDocumentV8>? = null,
+)
+
+/**
+ * v8. One animated property: [property] is a placement channel
+ * ("positionX", "positionY", "scale", "rotation", "opacity") or "effect",
+ * with [effectId] and [param] naming the effect parameter.
+ */
+@Serializable
+internal data class PropertyAnimationDocumentV8(
+    val property: String,
+    val effectId: String? = null,
+    val param: String? = null,
+    val keyframes: List<KeyframeDocumentV8> = emptyList(),
+)
+
+/**
+ * v8. [timeUs] is clip-local (µs since the clip's first frame; may be
+ * negative or past the end). [easing] shapes the way to the next keyframe:
+ * "linear", "hold", "ease-in", "ease-out", "ease-in-out" or
+ * "cubic-bezier(x1,y1,x2,y2)".
+ */
+@Serializable
+internal data class KeyframeDocumentV8(
+    val timeUs: Long,
+    val value: Double,
+    val easing: String = "linear",
 )
 
 /**
@@ -424,6 +463,9 @@ internal sealed class DecodeResult {
 }
 
 internal object ProjectDocumentCodec {
+    /** v8: the property name of an animated effect parameter. */
+    private const val EFFECT_PROPERTY = "effect"
+
     internal val json = Json {
         ignoreUnknownKeys = true
         encodeDefaults = true
@@ -445,8 +487,8 @@ internal object ProjectDocumentCodec {
         val version = element["schemaVersion"]?.jsonPrimitive?.int ?: error("Missing schemaVersion")
         when {
             version > CURRENT_SCHEMA_VERSION -> DecodeResult.NewerSchema(version)
-            // v5, v6 and v7 only added optional fields to the v4 shape.
-            version in 4..7 -> DecodeResult.Ok(json.decodeFromJsonElement(ProjectDocumentV4.serializer(), element).toModel().validated())
+            // v5 to v8 only added optional fields to the v4 shape.
+            version in 4..8 -> DecodeResult.Ok(json.decodeFromJsonElement(ProjectDocumentV4.serializer(), element).toModel().validated())
             version == 3 -> DecodeResult.Ok(json.decodeFromJsonElement(ProjectDocumentV3.serializer(), element).toModel().validated())
             version == 2 -> DecodeResult.Ok(json.decodeFromJsonElement(ProjectDocumentV2.serializer(), element).toModel())
             version == 1 -> DecodeResult.Ok(json.decodeFromJsonElement(ProjectDocumentV1.serializer(), element).toModel())
@@ -512,6 +554,7 @@ internal object ProjectDocumentCodec {
                                 audio = clip.audio.takeIf { it != ClipAudio.DEFAULT }?.toDocument(),
                                 overlay = clip.overlay?.toDocument(),
                                 transform = clip.transform.takeUnless { it.isDefault }?.toDocument(),
+                                animation = clip.animation.takeUnless { it.isEmpty }?.toDocument(),
                             )
                         },
                     )
@@ -519,6 +562,43 @@ internal object ProjectDocumentCodec {
             )
         },
     )
+
+    private fun ClipAnimation.toDocument(): List<PropertyAnimationDocumentV8> =
+        tracks.entries.sortedBy { it.key.key }.map { (property, track) ->
+            PropertyAnimationDocumentV8(
+                property = if (property is EffectParam) EFFECT_PROPERTY else property.key,
+                effectId = (property as? EffectParam)?.effectId,
+                param = (property as? EffectParam)?.param,
+                keyframes = track.keyframes.map { KeyframeDocumentV8(it.timeUs, it.value, Easing.key(it.easing)) },
+            )
+        }
+
+    /**
+     * Lenient: non-finite values and repeated times are dropped, an unknown
+     * easing reads as linear, and keyframes for properties the clip can't
+     * have (an unknown name, placement on a sound clip, a missing effect) are
+     * ignored instead of failing the project.
+     */
+    private fun List<PropertyAnimationDocumentV8>.toModel(kind: TrackKind, effectIds: Set<String>): ClipAnimation {
+        val tracks = LinkedHashMap<AnimatedProperty, KeyframeTrack>()
+        forEach { doc ->
+            val property: AnimatedProperty = when {
+                doc.property == EFFECT_PROPERTY -> {
+                    val effectId = doc.effectId?.takeIf { it in effectIds } ?: return@forEach
+                    EffectParam(effectId, doc.param?.takeIf { it.isNotBlank() } ?: return@forEach)
+                }
+                kind == TrackKind.AUDIO -> return@forEach
+                else -> TransformChannel.fromKey(doc.property) ?: return@forEach
+            }
+            val keyframes = doc.keyframes
+                .filter { it.value.isFinite() }
+                .sortedBy { it.timeUs }
+                .distinctBy { it.timeUs }
+                .map { Keyframe(it.timeUs, it.value, Easing.parse(it.easing) ?: Easing.Linear) }
+            if (keyframes.isNotEmpty()) tracks[property] = KeyframeTrack(keyframes)
+        }
+        return if (tracks.isEmpty()) ClipAnimation.NONE else ClipAnimation(tracks)
+    }
 
     private fun ClipTransform.toDocument() = TransformDocumentV7(
         positionX = positionX,
@@ -727,6 +807,7 @@ internal object ProjectDocumentCodec {
                                     overlay = overlay,
                                     // Only pictures on video tracks are placed; a transform anywhere else is ignored.
                                     transform = clip.transform?.takeIf { kind == TrackKind.VIDEO }?.toModel() ?: ClipTransform.DEFAULT,
+                                    animation = clip.animation?.toModel(kind, clip.effects.map { it.id }.toSet()) ?: ClipAnimation.NONE,
                                 )
                             },
                         )

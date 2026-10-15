@@ -333,10 +333,45 @@ Original scope:
 - **Still open:** keyframed transforms, flip, background fill other than
   black, picture-in-picture.
 
+## M9 — Keyframes (code complete 2026-10-15, awaiting build and device run)
+- **Done:**
+  - Model: `ClipAnimation` of `KeyframeTrack`s over clip-local time, for
+    position, scale, rotation and opacity (pictures and overlays) and effect
+    parameters. Linear, hold, ease-in, ease-out, ease-in-out and custom
+    cubic Bézier curves, evaluated deterministically. Schema v8.
+  - Edits: trims and splits keep keyframes on their moment of the content.
+    Keyframe moments can be added, deleted, eased, nudged and cleared, and
+    gestures on keyframed clips key the playhead. All of it is undoable.
+  - Rendering: per-frame evaluation at each frame's own time in the GL
+    stages (preview and export alike) and in the overlay renderer. Keyframes
+    and overlays update the running preview in place. The selected overlay
+    is drawn by the player while playing.
+  - Editor: keyframe bar (previous/next, add/delete, curve, ±1 frame,
+    clear) and timeline markers. The canvas and panels show the clip as it
+    is at the playhead.
+- **Tests:**
+  - JVM: easing reference values, symmetry, monotonicity and determinism.
+    Interpolation, clip edges, order independence, editing and kept ranges.
+    Clip-local time conversion. Transform, overlay and effect evaluation,
+    clamping and multi-turn rotation. Edit rules (moments, rotation the
+    short way, last keyframe, easing, moving). Splits (fixed and 60 random
+    sessions), trims and moves leaving every frame unchanged. Undo and redo.
+    Refusals. Plan evaluation equal to the model's at every frame, in any
+    order. Overlay visibility. Storage round trip, leniency and v7
+    compatibility. ViewModel (keyframes at the playhead, drags rendered in
+    place, easing, nudge, delete, clear, reset, overlays, duplicate, live
+    overlay hiding while paused).
+  - Instrumented (`KeyframeExportInstrumentedTest`): an exported
+    keyframed clip, second in the timeline, measured on five frames against
+    the model's placement.
+  - All of these need a build and a device run.
+- **Still open:** keyframed crop and anchor, a curve editor, tapping
+  timeline markers, animated text styles, gain keyframe editing UI,
+  effect rendering.
+
 ## M7+ — Creative features
 Each item follows the model → evaluator → playback and export pattern:
 - Speed ramps.
-- Keyframes and animation for text and stickers.
 - Transitions.
 - Color and LUT filters (OpenGL ES `GlEffect`).
 - Audio mixing, volume keyframes and fades.

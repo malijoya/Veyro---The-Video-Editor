@@ -28,14 +28,14 @@ class PreviewControllerTest {
         override var hasVideo = false
         override var errorCode: Int? = null
 
-        var listener: (() -> Unit)? = null
+        var changeListener: (() -> Unit)? = null
         var loadedItems: List<EngineItem>? = null
         var loadCount = 0
         var released = false
         val seeks = mutableListOf<Pair<Int, Long>>()
 
         override fun setListener(listener: (() -> Unit)?) {
-            this.listener = listener
+            changeListener = listener
         }
 
         override fun load(items: List<EngineItem>, startIndex: Int, startPositionMs: Long) {
@@ -99,20 +99,20 @@ class PreviewControllerTest {
             currentItemDurationMs = durationMs
             hasVideo = video
             isPlaying = playWhenReady
-            listener?.invoke()
+            changeListener?.invoke()
         }
 
         fun end() {
             status = EngineStatus.ENDED
             isPlaying = false
-            listener?.invoke()
+            changeListener?.invoke()
         }
 
         fun fail(code: Int) {
             errorCode = code
             status = EngineStatus.IDLE
             isPlaying = false
-            listener?.invoke()
+            changeListener?.invoke()
         }
     }
 
@@ -176,7 +176,7 @@ class PreviewControllerTest {
 
         controller.detach()
         assertTrue(first.released)
-        assertNull(first.listener)
+        assertNull(first.changeListener)
         assertNull(controller.player.value)
         assertEquals(PreviewStatus.IDLE, controller.state.value.status)
         assertEquals(3_000_000L, controller.state.value.positionUs)

@@ -23,6 +23,7 @@ import com.editor.veyro.core.timeline.export.AudioSegment
 import com.editor.veyro.core.timeline.export.ExportPlan
 import com.editor.veyro.core.timeline.export.SegmentGain
 import com.editor.veyro.core.timeline.export.VideoSegment
+import com.editor.veyro.media.render.overlay.LiveOverlays
 import com.editor.veyro.media.render.overlay.StickerImages
 import com.editor.veyro.media.render.overlay.TimelineOverlay
 import com.editor.veyro.media.render.transform.ClipTransformEffects
@@ -48,7 +49,8 @@ import com.editor.veyro.media.render.transform.LiveTransform
  *   preview and export, including after seeks. Items at unity gain skip it.
  * - Each picture item is placed on the output canvas by its own transform
  *   ([ClipTransformEffects]: crop, fit or fill, scale, rotation about the
- *   anchor, position, opacity), so every item leaves its effects at the
+ *   anchor, position, opacity), evaluated with its keyframes for every
+ *   frame at the frame's own time, so every item leaves its effects at the
  *   chosen output size. The composition-wide [Presentation] after them is
  *   then a no-op safety net that keeps the output at that size.
  * - Text and stickers ([ExportPlan.overlays]) are drawn after it, by one
@@ -62,7 +64,13 @@ public object CompositionFactory {
 
     /** The composition Transformer exports. HDR sources are tone-mapped to SDR on Android 10+. */
     public fun forExport(plan: ExportPlan, context: Context): Composition =
-        build(plan, context, toneMapHdr = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q, transforms = fixedTransforms(plan))
+        build(
+            plan,
+            context,
+            toneMapHdr = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q,
+            transforms = fixedTransforms(plan),
+            overlays = LiveOverlays(plan.overlays),
+        )
 
     /**
      * The composition the editor preview plays. Same sequences, items, gains
@@ -78,20 +86,31 @@ public object CompositionFactory {
      * The player reads them on every frame, so the editor can move, scale,
      * turn or crop a clip in the real render without a new composition.
      * Without them, each segment's planned transform is used.
+     *
+     * [overlays] likewise lets the editor change text and stickers, or hide
+     * the one being edited, without a new composition. Without it, the
+     * plan's overlays are drawn.
      */
-    public fun forPreview(plan: ExportPlan, context: Context, transforms: List<LiveTransform>? = null): Composition {
+    public fun forPreview(
+        plan: ExportPlan,
+        context: Context,
+        transforms: List<LiveTransform>? = null,
+        overlays: LiveOverlays? = null,
+    ): Composition {
         require(transforms == null || transforms.size == plan.video.size) { "One transform per video segment" }
         return build(
             plan,
             context,
             toneMapHdr = plan.overlays.isNotEmpty() && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q,
             transforms = transforms ?: fixedTransforms(plan),
+            overlays = overlays ?: LiveOverlays(plan.overlays),
         )
     }
 
-    private fun fixedTransforms(plan: ExportPlan): List<LiveTransform> = plan.video.map { LiveTransform(it.transform) }
+    /** Each segment's placement over time, as planned. */
+    public fun fixedTransforms(plan: ExportPlan): List<LiveTransform> = plan.segmentTransforms().map(::LiveTransform)
 
-    private fun build(plan: ExportPlan, context: Context, toneMapHdr: Boolean, transforms: List<LiveTransform>): Composition {
+    private fun build(plan: ExportPlan, context: Context, toneMapHdr: Boolean, transforms: List<LiveTransform>, overlays: LiveOverlays): Composition {
         val sequences = mutableListOf<EditedMediaItemSequence>()
         if (plan.video.isNotEmpty()) {
             val fps = plan.settings.outputFps
@@ -120,13 +139,13 @@ public object CompositionFactory {
         val builder = Composition.Builder(sequences)
         if (plan.video.isNotEmpty()) {
             val presentation = Presentation.createForWidthAndHeight(plan.settings.widthPx, plan.settings.heightPx, Presentation.LAYOUT_SCALE_TO_FIT)
-            val overlays = if (plan.overlays.isEmpty()) {
+            val overlayEffects = if (plan.overlays.isEmpty()) {
                 emptyList()
             } else {
                 // A new overlay per composition: it keeps the current frame's bitmap and GL texture.
-                listOf(OverlayEffect(listOf(TimelineOverlay(plan.overlays, plan.settings.widthPx, plan.settings.heightPx, StickerImages(context)))))
+                listOf(OverlayEffect(listOf(TimelineOverlay(overlays, plan.settings.widthPx, plan.settings.heightPx, StickerImages(context)))))
             }
-            builder.setEffects(Effects(emptyList(), listOf(presentation) + overlays))
+            builder.setEffects(Effects(emptyList(), listOf(presentation) + overlayEffects))
         }
         if (toneMapHdr) builder.setHdrMode(Composition.HDR_MODE_TONE_MAP_HDR_TO_SDR_USING_OPEN_GL)
         return builder.build()

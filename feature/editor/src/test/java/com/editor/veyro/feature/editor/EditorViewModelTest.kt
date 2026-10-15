@@ -2,6 +2,8 @@ package com.editor.veyro.feature.editor
 
 import androidx.lifecycle.SavedStateHandle
 import androidx.media3.common.Player
+import com.editor.veyro.core.model.animation.Easing
+import com.editor.veyro.core.model.animation.TransformChannel
 import com.editor.veyro.core.model.project.MediaId
 import com.editor.veyro.core.model.project.MediaKind
 import com.editor.veyro.core.model.project.MediaRef
@@ -65,8 +67,14 @@ class EditorViewModelTest {
     private class RecordingEngine : PlaybackEngine {
         override val player: Player? = null
         override var status = EngineStatus.IDLE
-        override val isPlaying = false
+        override var isPlaying = false
         override var playWhenReady = false
+
+        /** The overlay the editor asked the player to leave out. */
+        var hidden: String? = null
+        override fun setHiddenOverlay(clipId: String?) {
+            hidden = clipId
+        }
         override val currentItemIndex = 0
         override val currentPositionMs = 0L
         override val currentItemDurationMs: Long? = null
@@ -98,9 +106,11 @@ class EditorViewModelTest {
         }
         override fun play() {
             playWhenReady = true
+            isPlaying = true
         }
         override fun pause() {
             playWhenReady = false
+            isPlaying = false
         }
         override fun seekTo(itemIndex: Int, positionMs: Long) = Unit
         override fun release() = Unit
@@ -569,10 +579,19 @@ class EditorViewModelTest {
         assertEquals("Hello", state.tracks.first().clips.single().title)
         assertTrue(vm.ready().canUndo)
 
-        // While selected, the player leaves it out (the canvas draws it live). Once deselected, the player draws it.
-        assertTrue(engines.single().timelines.last().overlays.isEmpty())
+        // The plan always has it. While selected and paused, the player hides it live (the canvas draws it);
+        // while playing, the player draws it, so its animation is frame-exact; once deselected, the player draws it.
+        val engine = engines.single()
+        assertEquals(listOf(overlay.clipId.value), engine.timelines.last().overlays.map { it.clipId })
+        assertEquals(overlay.clipId.value, engine.hidden)
+        val loads = engine.timelines.size
+        vm.controller.play()
+        assertNull(engine.hidden)
+        vm.controller.pause()
+        assertEquals(overlay.clipId.value, engine.hidden)
         vm.selectClip(null)
-        assertEquals(listOf(overlay.clipId.value), engines.single().timelines.last().overlays.map { it.clipId })
+        assertNull(engine.hidden)
+        assertEquals(loads, engine.timelines.size) // None of this reloads the player.
     }
 
     @Test
@@ -770,6 +789,113 @@ class EditorViewModelTest {
         vm.previewTransform(ClipId("clip-v"), moved)
         vm.selectClip(ClipId("clip-img"))
         assertEquals(moved, repository.saved.value.single().timeline!!.findClip(ClipId("clip-v"))!!.transform)
+    }
+
+
+    // ---------------- Keyframes ----------------
+
+    @Test
+    fun `keyframes are added at the playhead, and edits there become keyframes`() {
+        runTest {
+            val repository = FakeRepository(project(media("v", MediaKind.VIDEO, 6_000_000)))
+            val vm = viewModel(repository)
+            vm.controller.attach()
+            val engine = engines.single()
+            engine.inPlace = true
+            val clip = ClipId("clip-v")
+            vm.selectClip(clip)
+            fun saved() = repository.saved.value.single().timeline!!.findClip(clip)!!
+
+            // A keyframe at 0 s (snapped from mid-frame) and one at 2 s; nothing moves yet.
+            vm.addKeyframe(clip, atUs = 10_000)
+            vm.addKeyframe(clip, atUs = 2_000_000)
+            assertEquals(listOf(0L, 2_000_000L), saved().animation.transformKeyframeTimes())
+            assertEquals(ClipTransform.DEFAULT, vm.ready().selectedPicture!!.at(1_000_000).transform)
+            assertEquals(listOf(0L, 2_000_000L), vm.ready().main().clips.first().keyframeTimesUs)
+
+            // A drag at 2 s, as the canvas sends it (the picture as shown there, moved): it keys 2 s, live and as one undo step.
+            val shown = vm.ready().selectedPicture!!.at(2_000_000).transform
+            val loads = engine.timelines.size
+            listOf(0.6f, 0.7f, 0.8f).forEach { x -> vm.previewTransform(clip, shown.with(positionX = x), atUs = 2_000_000) }
+            assertEquals(loads, engine.timelines.size) // Rendered in place.
+            assertEquals(0.65f, engine.inPlaceUpdates.last().segmentTransforms().first().at(1_000_000).positionX, 1e-6f)
+            vm.commitTransform()
+            assertEquals(ClipTransform.DEFAULT, saved().transform) // The static placement is untouched...
+            assertEquals(0.8, saved().animation[TransformChannel.POSITION_X]!!.at(2_000_000)!!.value, 1e-6) // ...the keyframe holds the move.
+            assertEquals(0.65f, vm.ready().selectedPicture!!.at(1_000_000).transform.positionX, 1e-6f)
+
+            // Between keyframes, an edit adds one at the frame under the playhead, for the changed channel only.
+            vm.setTransform(clip, vm.ready().selectedPicture!!.at(1_010_000).transform.with(scale = 2f), atUs = 1_010_000)
+            assertEquals(listOf(0L, 1_000_000L, 2_000_000L), saved().animation[TransformChannel.SCALE]!!.keyframes.map { it.timeUs })
+            assertEquals(listOf(0L, 2_000_000L), saved().animation[TransformChannel.POSITION_X]!!.keyframes.map { it.timeUs })
+
+            vm.undo()
+            vm.undo()
+            assertEquals(listOf(0L, 2_000_000L), saved().animation.transformKeyframeTimes())
+            assertEquals(0.5, saved().animation[TransformChannel.POSITION_X]!!.at(2_000_000)!!.value, 1e-6)
+        }
+    }
+
+    @Test
+    fun `the keyframe at the playhead can be eased, moved and deleted, clearing keeps what is shown`() {
+        runTest {
+            val repository = FakeRepository(project(media("v", MediaKind.VIDEO, 6_000_000)))
+            val vm = viewModel(repository)
+            val clip = ClipId("clip-v")
+            fun saved() = repository.saved.value.single().timeline!!.findClip(clip)!!
+            vm.addKeyframe(clip, atUs = 0)
+            vm.addKeyframe(clip, atUs = 2_000_000)
+            vm.setTransform(clip, ClipTransform(scale = 3f), atUs = 2_000_000)
+
+            // Within half a frame of the playhead counts as on the keyframe.
+            vm.setKeyframeEasing(clip, atUs = 10_000, Easing.EASE_IN)
+            assertEquals(Easing.EASE_IN, saved().animation[TransformChannel.SCALE]!!.at(0)!!.easing)
+            assertEquals(1f + 2f * Easing.EASE_IN.ease(0.5).toFloat(), vm.ready().selectedPicture!!.at(1_000_000).transform.scale, 1e-5f)
+
+            // One frame later; the playhead follows.
+            assertEquals(2_033_334L, vm.nudgeKeyframe(clip, atUs = 2_000_000, frames = 1))
+            assertEquals(listOf(0L, 2_033_334L), saved().animation.transformKeyframeTimes())
+            assertNull(vm.nudgeKeyframe(clip, atUs = 1_000_000, frames = 1)) // No keyframe there.
+
+            vm.removeKeyframe(clip, atUs = 2_033_334)
+            assertEquals(listOf(0L), saved().animation.transformKeyframeTimes())
+
+            vm.addKeyframe(clip, atUs = 3_000_000)
+            vm.setTransform(clip, ClipTransform(positionX = 0.9f), atUs = 3_000_000)
+            vm.clearKeyframes(clip, atUs = 1_500_000)
+            assertFalse(saved().animation.animatesTransform)
+            // What was shown at 1.5 s: halfway from 0.5 to 0.9 in time, on the ease-in curve set at 0 s.
+            assertEquals(0.5f + 0.4f * Easing.EASE_IN.ease(0.5).toFloat(), saved().transform.positionX, 1e-5f)
+
+            // Reset also clears keyframes.
+            vm.addKeyframe(clip, atUs = 0)
+            vm.resetTransform(clip)
+            assertTrue(saved().animation.isEmpty)
+            assertTrue(saved().transform.isDefault)
+        }
+    }
+
+    @Test
+    fun `overlay keyframes work the same, and the canvas sees the overlay as it is at the playhead`() {
+        runTest {
+            val repository = FakeRepository(project(media("v", MediaKind.VIDEO, 6_000_000)))
+            val vm = viewModel(repository)
+            vm.addText("Hi", atUs = 0)
+            val text = vm.ready().selectedOverlay!!
+            vm.addKeyframe(text.clipId, atUs = 0)
+            vm.addKeyframe(text.clipId, atUs = 2_000_000)
+            val at2 = vm.ready().selectedOverlay!!.at(2_000_000).overlay
+            vm.previewOverlay(text.clipId, at2.copy(transform = at2.transform.copy(centerY = 0.1f)), atUs = 2_000_000)
+            vm.commitOverlay()
+            val shown = vm.ready().selectedOverlay!!
+            assertEquals(0.5f, shown.overlay.transform.centerY, 0f) // Static value unchanged.
+            assertEquals(0.3f, shown.at(1_000_000).overlay.transform.centerY, 1e-6f)
+            assertEquals(listOf(0L, 2_000_000L), vm.ready().tracks.first().clips.single().keyframeTimesUs)
+
+            // A duplicate keeps the animation, nudged.
+            vm.duplicateOverlay(text.clipId)
+            assertEquals(0.33f, vm.ready().selectedOverlay!!.at(1_000_000).overlay.transform.centerY, 1e-5f)
+        }
     }
 
     private companion object {

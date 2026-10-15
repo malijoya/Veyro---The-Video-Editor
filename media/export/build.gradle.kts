@@ -14,6 +14,7 @@ dependencies {
     implementation(libs.androidx.media3.effect)
     implementation(libs.androidx.media3.common)
     implementation(libs.kotlinx.coroutines.android)
+    implementation(libs.androidx.annotation)
 
     testImplementation(libs.kotlinx.coroutines.test)
     // The instrumented test plays the exported file with ExoPlayer.

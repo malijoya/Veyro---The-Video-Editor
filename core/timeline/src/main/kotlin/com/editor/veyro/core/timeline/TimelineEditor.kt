@@ -1,5 +1,6 @@
 package com.editor.veyro.core.timeline
 
+import com.editor.veyro.core.model.animation.ClipAnimation
 import com.editor.veyro.core.model.overlay.OverlayContent
 import com.editor.veyro.core.model.project.MediaKind
 import com.editor.veyro.core.model.timeline.Clip
@@ -44,6 +45,7 @@ public object TimelineEditor {
             is EditCommand.SetOverlay -> setOverlay(timeline, command)
             is EditCommand.ArrangeLayer -> arrangeLayer(timeline, command)
             is EditCommand.SetClipTransform -> setClipTransform(timeline, command, context)
+            is EditCommand.SetClipAnimation -> setClipAnimation(timeline, command)
         }
         return if (result is EditResult.Applied) result.copy(timeline = withoutEmptyOverlayTracks(result.timeline)) else result
     }
@@ -75,6 +77,8 @@ public object TimelineEditor {
             startUs = if (magnetic) clip.startUs else clip.startUs + delta,
             sourceInUs = if (bounds.isStill) 0 else clip.sourceInUs + delta,
             durationUs = clip.durationUs - delta,
+            // Clip-local time now starts `delta` later in the content, so keyframes move back by it and stay on their moment.
+            animation = clip.animation.shifted(-delta),
         )
         return replaceClip(timeline, track, index, trimmed)
     }
@@ -111,7 +115,8 @@ public object TimelineEditor {
 
         val leftDuration = at - clip.startUs
         // The fade-in stays at the start and the fade-out at the end. Keyframes are in source time, so each part keeps its own.
-        val left = clip.copy(durationUs = leftDuration, audio = clip.audio.copy(fadeOutUs = 0))
+        // Each part keeps the keyframes that shape its own range (re-based to its own start), so playback across the cut is unchanged.
+        val left = clip.copy(durationUs = leftDuration, audio = clip.audio.copy(fadeOutUs = 0), animation = clip.animation.part(0, leftDuration))
         val right = Clip(
             id = context.newClipId(),
             mediaId = clip.mediaId,
@@ -123,6 +128,7 @@ public object TimelineEditor {
             audio = clip.audio.copy(fadeInUs = 0),
             overlay = clip.overlay, // Both parts show the same text or sticker.
             transform = clip.transform, // And sit in the same place.
+            animation = clip.animation.part(leftDuration, clip.durationUs),
         )
         val clips = track.clips.toMutableList().apply {
             set(index, left)
@@ -251,6 +257,8 @@ public object TimelineEditor {
             sourceInUs = 0,
             durationUs = command.durationUs.coerceAtLeast(timeline.minClipDurationUs),
             overlay = command.overlay,
+            // Overlays have no effects yet, so only placement keyframes can come along.
+            animation = command.animation.keepingEffects(emptySet()),
         )
         val stack = timeline.overlayTracks
         val topmost = stack.indexOfFirst { it.overlaps(clip) }
@@ -269,9 +277,23 @@ public object TimelineEditor {
         if (track.kind != TrackKind.VIDEO) return EditResult.Rejected(EditRejection.NOT_A_PICTURE)
         val bounds = boundsOf(clip, context) ?: return EditResult.Rejected(EditRejection.MEDIA_NOT_FOUND)
         if (bounds.kind == MediaKind.AUDIO) return EditResult.Rejected(EditRejection.NOT_A_PICTURE)
-        if (clip.transform == command.transform) return EditResult.Rejected(EditRejection.NO_CHANGE)
-        return replaceClip(timeline, track, index, clip.copy(transform = command.transform))
+        val animation = command.animation ?: clip.animation
+        if (clip.transform == command.transform && clip.animation == animation) return EditResult.Rejected(EditRejection.NO_CHANGE)
+        if (!animatable(clip, track, animation)) return EditResult.Rejected(EditRejection.NOT_ANIMATABLE)
+        return replaceClip(timeline, track, index, clip.copy(transform = command.transform, animation = animation))
     }
+
+    private fun setClipAnimation(timeline: Timeline, command: EditCommand.SetClipAnimation): EditResult {
+        val located = locate(timeline, command.clipId) ?: return EditResult.Rejected(EditRejection.CLIP_NOT_FOUND)
+        val (track, index, clip) = located
+        if (!animatable(clip, track, command.animation)) return EditResult.Rejected(EditRejection.NOT_ANIMATABLE)
+        if (clip.animation == command.animation) return EditResult.Rejected(EditRejection.NO_CHANGE)
+        return replaceClip(timeline, track, index, clip.copy(animation = command.animation))
+    }
+
+    /** Placement keyframes need a picture or an overlay; effect keyframes need the effect. */
+    private fun animatable(clip: Clip, track: Track, animation: ClipAnimation): Boolean =
+        (!animation.animatesTransform || track.kind != TrackKind.AUDIO) && clip.effects.map { it.id }.containsAll(animation.effectIds)
 
     private fun setOverlay(timeline: Timeline, command: EditCommand.SetOverlay): EditResult {
         val located = locate(timeline, command.clipId) ?: return EditResult.Rejected(EditRejection.CLIP_NOT_FOUND)
@@ -280,8 +302,10 @@ public object TimelineEditor {
         if ((current.content is OverlayContent.Text) != (command.overlay.content is OverlayContent.Text)) {
             return EditResult.Rejected(EditRejection.NOT_AN_OVERLAY)
         }
-        if (current == command.overlay) return EditResult.Rejected(EditRejection.NO_CHANGE)
-        return replaceClip(timeline, track, index, clip.copy(overlay = command.overlay))
+        val animation = command.animation ?: clip.animation
+        if (current == command.overlay && clip.animation == animation) return EditResult.Rejected(EditRejection.NO_CHANGE)
+        if (!animatable(clip, track, animation)) return EditResult.Rejected(EditRejection.NOT_ANIMATABLE)
+        return replaceClip(timeline, track, index, clip.copy(overlay = command.overlay, animation = animation))
     }
 
     /**

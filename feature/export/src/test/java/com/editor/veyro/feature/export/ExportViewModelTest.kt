@@ -1,4 +1,4 @@
-package com.editor.veyro.feature.export
+﻿package com.editor.veyro.feature.export
 
 import androidx.lifecycle.SavedStateHandle
 import com.editor.veyro.core.model.project.MediaHealth
@@ -79,7 +79,8 @@ class ExportViewModelTest {
 
     private fun media(id: String, kind: MediaKind, durationUs: Long = 2_000_000) = MediaRef(
         id = MediaId(id), uri = "content://$id", kind = kind, displayName = "$id.mp4", mimeType = null,
-        durationUs = if (kind == MediaKind.IMAGE) 0 else durationUs, widthPx = 1_920, heightPx = 1_080,
+        durationUs = if (kind == MediaKind.IMAGE) 0 else durationUs,
+        widthPx = if (kind == MediaKind.AUDIO) 0 else 1_920, heightPx = if (kind == MediaKind.AUDIO) 0 else 1_080,
         rotationDegrees = 0, sizeBytes = null,
     )
 

@@ -60,10 +60,18 @@ public interface PlaybackEngine {
     /**
      * Shows [plan] instead of the loaded timeline without reloading, when
      * the two differ only in ways the engine can change on the fly (clip
-     * transforms). Position and play state stay as they are. Returns false
-     * when it can't, and the caller then loads [plan] normally.
+     * transforms, keyframes, text and stickers). Position and play state stay
+     * as they are. Returns false when it can't, and the caller then loads
+     * [plan] normally.
      */
     public fun updateInPlace(plan: ExportPlan): Boolean = false
+
+    /**
+     * Leaves the overlay of clip [clipId] out of the rendered picture (null
+     * shows them all), for timelines, without reloading. The setting also
+     * applies to timelines loaded later. Engines without overlays ignore it.
+     */
+    public fun setHiddenOverlay(clipId: String?) {}
 
     public fun play()
     public fun pause()

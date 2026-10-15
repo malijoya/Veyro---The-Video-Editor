@@ -1,5 +1,6 @@
 package com.editor.veyro.core.timeline
 
+import com.editor.veyro.core.model.animation.ClipAnimation
 import com.editor.veyro.core.model.audio.ClipAudio
 import com.editor.veyro.core.model.audio.TrackAudio
 import com.editor.veyro.core.model.overlay.Overlay
@@ -75,23 +76,40 @@ public sealed interface EditCommand {
      * track is inserted.
      *
      * [mediaId] is the sticker's image, and must be null for text.
+     * [animation] gives it keyframes from the start (a duplicate keeps the
+     * original's); only placement keyframes apply to overlays.
      */
-    public data class AddOverlay(val overlay: Overlay, val mediaId: MediaId?, val startUs: Long, val durationUs: Long) : EditCommand
+    public data class AddOverlay(
+        val overlay: Overlay,
+        val mediaId: MediaId?,
+        val startUs: Long,
+        val durationUs: Long,
+        val animation: ClipAnimation = ClipAnimation.NONE,
+    ) : EditCommand
 
     /**
      * Replaces an overlay's content and placement: text, style, position,
      * size, rotation, opacity. Text stays text and a sticker stays a sticker.
+     * A non-null [animation] replaces its keyframes in the same edit.
      */
-    public data class SetOverlay(val clipId: ClipId, val overlay: Overlay) : EditCommand
+    public data class SetOverlay(val clipId: ClipId, val overlay: Overlay, val animation: ClipAnimation? = null) : EditCommand
 
     /** Changes where an overlay sits in the stack of overlays it overlaps in time. */
     public data class ArrangeLayer(val clipId: ClipId, val move: LayerMove) : EditCommand
 
     /**
      * Replaces a video or photo clip's placement on the canvas: position,
-     * scale, rotation, anchor, crop, fit and opacity.
+     * scale, rotation, anchor, crop, fit and opacity. A non-null [animation]
+     * replaces its keyframes in the same edit.
      */
-    public data class SetClipTransform(val clipId: ClipId, val transform: ClipTransform) : EditCommand
+    public data class SetClipTransform(val clipId: ClipId, val transform: ClipTransform, val animation: ClipAnimation? = null) : EditCommand
+
+    /**
+     * Replaces a clip's keyframes (adding, moving, easing or deleting them).
+     * Placement keyframes are allowed on video and overlay tracks; effect
+     * parameter keyframes need the effect to be on the clip.
+     */
+    public data class SetClipAnimation(val clipId: ClipId, val animation: ClipAnimation) : EditCommand
 }
 
 /**
@@ -143,6 +161,9 @@ public enum class EditRejection {
 
     /** A transform for a clip that isn't a picture on a video track (audio, text, stickers). */
     NOT_A_PICTURE,
+
+    /** Keyframes for something the clip doesn't have (placement on a sound clip, a missing effect). */
+    NOT_ANIMATABLE,
 }
 
 public sealed interface EditResult {
