@@ -16,7 +16,8 @@ import com.editor.veyro.media.render.CompositionFactory
  *
  * It plays the same composition export renders ([CompositionFactory]), so
  * the preview mixes every audio track at its timeline position, with the
- * same volume, mute, fades and mix headroom, and draws photos itself.
+ * same volume, mute, fades and mix headroom, and draws photos, text and
+ * stickers itself.
  *
  * - Must be created and used on the main thread (CompositionPlayer uses the
  *   creating thread's Looper).
@@ -26,6 +27,8 @@ import com.editor.veyro.media.render.CompositionFactory
  */
 @OptIn(UnstableApi::class)
 public class CompositionPlaybackEngine(context: Context) : PlaybackEngine {
+
+    private val appContext = context.applicationContext
 
     private val compositionPlayer: CompositionPlayer = CompositionPlayer.Builder(context.applicationContext)
         .setAudioAttributes(
@@ -79,7 +82,7 @@ public class CompositionPlaybackEngine(context: Context) : PlaybackEngine {
 
     override fun loadTimeline(plan: ExportPlan, startPositionMs: Long) {
         planHasVideo = plan.video.isNotEmpty()
-        compositionPlayer.setComposition(CompositionFactory.forPreview(plan), startPositionMs.coerceAtLeast(0))
+        compositionPlayer.setComposition(CompositionFactory.forPreview(plan, appContext), startPositionMs.coerceAtLeast(0))
         compositionPlayer.prepare()
     }
 

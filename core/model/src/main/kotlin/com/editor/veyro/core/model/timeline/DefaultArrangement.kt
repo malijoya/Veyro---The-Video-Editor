@@ -79,10 +79,11 @@ public object DefaultArrangement {
 
     /**
      * Adds [media] at the end of the main track (video and photos) or the
-     * audio track (audio). Media already on the timeline is skipped.
+     * audio track (audio). Media already on the timeline (including images
+     * used as stickers) is skipped.
      */
     public fun append(timeline: Timeline, media: List<MediaRef>, photoDurationUs: Long = PHOTO_DURATION_US): Timeline {
-        val onTimeline = timeline.tracks.flatMap { track -> track.clips.map { it.mediaId } }.toSet()
+        val onTimeline = timeline.tracks.flatMap { track -> track.clips.mapNotNull { it.mediaId } }.toSet()
         var result = timeline
         for (item in media) {
             if (item.id in onTimeline) continue

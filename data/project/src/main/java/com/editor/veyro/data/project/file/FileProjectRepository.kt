@@ -110,7 +110,7 @@ public class FileProjectRepository(
         return project
     }
 
-    override suspend fun addMedia(id: ProjectId, media: List<MediaRef>): Int? {
+    override suspend fun addMedia(id: ProjectId, media: List<MediaRef>, arrange: Boolean): Int? {
         sourcePolicy.requirePermanent(media)
         var added: Int? = null
         modify(id) { existing ->
@@ -122,7 +122,13 @@ public class FileProjectRepository(
             } else {
                 existing.copy(
                     media = existing.media + fresh,
-                    timeline = existing.timeline?.let { DefaultArrangement.append(it, fresh, existing.settings.photoDurationUs) },
+                    timeline = if (arrange) {
+                        existing.timeline?.let { DefaultArrangement.append(it, fresh, existing.settings.photoDurationUs) }
+                    } else {
+                        // Kept off the timeline. An unedited project gets its current arrangement stored first,
+                        // or the default arrangement would place the new media on the main track.
+                        existing.timeline ?: DefaultArrangement.timelineFor(existing)
+                    },
                     updatedAtEpochMs = clock(),
                 )
             }
@@ -133,7 +139,9 @@ public class FileProjectRepository(
     override suspend fun updateTimeline(id: ProjectId, timeline: Timeline): Boolean = modify(id) { existing ->
         val mediaIds = existing.media.map { it.id }.toSet()
         timeline.tracks.forEach { track ->
-            track.clips.forEach { clip -> require(clip.mediaId in mediaIds) { "Clip ${clip.id.value} references media not in the project" } }
+            track.clips.forEach { clip ->
+                clip.mediaId?.let { id -> require(id in mediaIds) { "Clip ${clip.id.value} references media not in the project" } }
+            }
         }
         // The project's settings own the frame grid. A timeline can't change it.
         val aligned = timeline.copy(frameRate = existing.settings.frameRate)

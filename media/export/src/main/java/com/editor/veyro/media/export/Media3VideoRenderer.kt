@@ -43,7 +43,7 @@ public class Media3VideoRenderer(context: Context) : VideoRenderer {
         withContext(Dispatchers.Main.immediate) {
             output.delete()
             val composition = try {
-                CompositionFactory.forExport(plan)
+                CompositionFactory.forExport(plan, appContext)
             } catch (e: IllegalArgumentException) {
                 return@withContext RenderOutcome.Failed(ExportError.PROCESSING_FAILED, "Invalid composition: ${e.message}")
             } catch (e: IllegalStateException) {

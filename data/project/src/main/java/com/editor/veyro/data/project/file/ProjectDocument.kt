@@ -5,6 +5,16 @@ import com.editor.veyro.core.model.audio.ClipAudio
 import com.editor.veyro.core.model.audio.GainInterpolation
 import com.editor.veyro.core.model.audio.GainKeyframe
 import com.editor.veyro.core.model.audio.TrackAudio
+import com.editor.veyro.core.model.overlay.Argb
+import com.editor.veyro.core.model.overlay.Overlay
+import com.editor.veyro.core.model.overlay.OverlayContent
+import com.editor.veyro.core.model.overlay.OverlayFont
+import com.editor.veyro.core.model.overlay.OverlayTransform
+import com.editor.veyro.core.model.overlay.TextAlign
+import com.editor.veyro.core.model.overlay.TextBackground
+import com.editor.veyro.core.model.overlay.TextOutline
+import com.editor.veyro.core.model.overlay.TextShadow
+import com.editor.veyro.core.model.overlay.TextStyle
 import com.editor.veyro.core.model.project.AudioTrackInfo
 import com.editor.veyro.core.model.project.MediaId
 import com.editor.veyro.core.model.project.MediaKind
@@ -58,11 +68,15 @@ import kotlinx.serialization.json.jsonPrimitive
  *   optional fields added to the v4 shape, so v4 documents decode with the
  *   same classes and get defaults. The version still went up, so older app
  *   builds refuse v5 files instead of silently dropping audio settings.
+ * - v6 (2026-10-15): overlay tracks (kind "overlay") whose clips carry text
+ *   or a sticker: content, style and placement. Text clips have no media,
+ *   so a clip's mediaId became optional. Again only optional fields on the
+ *   v4 shape; older builds refuse v6 files rather than lose overlays.
  */
 
-internal const val CURRENT_SCHEMA_VERSION = 5
+internal const val CURRENT_SCHEMA_VERSION = 6
 
-// ======================= v4 / v5 (current) =======================
+// ======================= v4 / v5 / v6 (current) =======================
 
 @Serializable
 internal data class ProjectDocumentV4(
@@ -154,14 +168,71 @@ internal enum class GainInterpolationV5 {
 @Serializable
 internal data class ClipDocumentV4(
     val id: String,
-    val mediaId: String,
+    /** Required before v6. Absent only for text overlays. */
+    val mediaId: String? = null,
     val startUs: Long,
     val sourceInUs: Long,
     val durationUs: Long,
     val effects: List<EffectDocumentV4> = emptyList(),
     /** v5. Absent means default sound (100%, no fades). */
     val audio: ClipAudioDocumentV5? = null,
+    /** v6. Present exactly on overlay tracks. */
+    val overlay: OverlayDocumentV6? = null,
 )
+
+/**
+ * v6. Colors are "#AARRGGBB". Sizes are fractions (of the canvas's shorter
+ * side for the font, of the font size for outline, shadow and background),
+ * positions fractions of the canvas, rotation clockwise degrees.
+ */
+@Serializable
+internal data class OverlayDocumentV6(
+    val type: OverlayTypeV6,
+    /** Text overlays only. */
+    val text: String? = null,
+    val style: TextStyleDocumentV6? = null,
+    val centerX: Float = 0.5f,
+    val centerY: Float = 0.5f,
+    val scale: Float = 1f,
+    val rotationDegrees: Float = 0f,
+    val opacity: Float = 1f,
+)
+
+@Serializable
+internal enum class OverlayTypeV6 {
+    @SerialName("text") TEXT,
+    @SerialName("sticker") STICKER,
+}
+
+@Serializable
+internal data class TextStyleDocumentV6(
+    /** An [OverlayFont] key. Unknown keys read as the default sans-serif. */
+    val font: String = "sans",
+    val bold: Boolean = false,
+    val italic: Boolean = false,
+    val size: Float = TextStyle.DEFAULT_SIZE,
+    val color: String = "#FFFFFFFF",
+    val align: TextAlignV6 = TextAlignV6.CENTER,
+    val outline: OutlineDocumentV6? = null,
+    val shadow: ShadowDocumentV6? = null,
+    val background: BackgroundDocumentV6? = null,
+)
+
+@Serializable
+internal enum class TextAlignV6 {
+    @SerialName("left") LEFT,
+    @SerialName("center") CENTER,
+    @SerialName("right") RIGHT,
+}
+
+@Serializable
+internal data class OutlineDocumentV6(val color: String, val width: Float)
+
+@Serializable
+internal data class ShadowDocumentV6(val color: String, val blur: Float, val offsetX: Float, val offsetY: Float)
+
+@Serializable
+internal data class BackgroundDocumentV6(val color: String, val padding: Float, val corner: Float)
 
 @Serializable
 internal data class EffectDocumentV4(
@@ -198,6 +269,9 @@ internal data class TrackDocumentV3(val id: String, val kind: TrackKindV3, val c
 internal enum class TrackKindV3 {
     @SerialName("video") VIDEO,
     @SerialName("audio") AUDIO,
+
+    /** v6. */
+    @SerialName("overlay") OVERLAY,
 }
 
 @Serializable
@@ -332,8 +406,8 @@ internal object ProjectDocumentCodec {
         val version = element["schemaVersion"]?.jsonPrimitive?.int ?: error("Missing schemaVersion")
         when {
             version > CURRENT_SCHEMA_VERSION -> DecodeResult.NewerSchema(version)
-            // v5 only added optional fields to the v4 shape.
-            version == 5 || version == 4 -> DecodeResult.Ok(json.decodeFromJsonElement(ProjectDocumentV4.serializer(), element).toModel().validated())
+            // v5 and v6 only added optional fields to the v4 shape.
+            version in 4..6 -> DecodeResult.Ok(json.decodeFromJsonElement(ProjectDocumentV4.serializer(), element).toModel().validated())
             version == 3 -> DecodeResult.Ok(json.decodeFromJsonElement(ProjectDocumentV3.serializer(), element).toModel().validated())
             version == 2 -> DecodeResult.Ok(json.decodeFromJsonElement(ProjectDocumentV2.serializer(), element).toModel())
             version == 1 -> DecodeResult.Ok(json.decodeFromJsonElement(ProjectDocumentV1.serializer(), element).toModel())
@@ -343,11 +417,13 @@ internal object ProjectDocumentCodec {
         DecodeResult.Corrupt(e)
     }
 
-    /** Every clip must reference media in the project. Otherwise the document is corrupt. */
+    /** Every clip with media must reference media in the project. Otherwise the document is corrupt. */
     private fun Project.validated(): Project {
         val mediaIds = media.map { it.id }.toSet()
         timeline?.tracks?.forEach { track ->
-            track.clips.forEach { clip -> require(clip.mediaId in mediaIds) { "Clip ${clip.id.value} references unknown media" } }
+            track.clips.forEach { clip ->
+                clip.mediaId?.let { id -> require(id in mediaIds) { "Clip ${clip.id.value} references unknown media" } }
+            }
         }
         return this
     }
@@ -375,7 +451,11 @@ internal object ProjectDocumentCodec {
                 tracks = timeline.tracks.map { track ->
                     TrackDocumentV4(
                         id = track.id.value,
-                        kind = if (track.kind == TrackKind.VIDEO) TrackKindV3.VIDEO else TrackKindV3.AUDIO,
+                        kind = when (track.kind) {
+                            TrackKind.VIDEO -> TrackKindV3.VIDEO
+                            TrackKind.AUDIO -> TrackKindV3.AUDIO
+                            TrackKind.OVERLAY -> TrackKindV3.OVERLAY
+                        },
                         audio = track.audio.takeIf { it != TrackAudio.DEFAULT }?.let { TrackAudioDocumentV5(it.volume, it.muted) },
                         role = when (track.role) {
                             AudioRole.MUSIC -> AudioRoleV5.MUSIC
@@ -385,12 +465,13 @@ internal object ProjectDocumentCodec {
                         clips = track.clips.map { clip ->
                             ClipDocumentV4(
                                 id = clip.id.value,
-                                mediaId = clip.mediaId.value,
+                                mediaId = clip.mediaId?.value,
                                 startUs = clip.startUs,
                                 sourceInUs = clip.sourceInUs,
                                 durationUs = clip.durationUs,
                                 effects = clip.effects.map { EffectDocumentV4(it.id, it.type, it.enabled, it.params) },
                                 audio = clip.audio.takeIf { it != ClipAudio.DEFAULT }?.toDocument(),
+                                overlay = clip.overlay?.toDocument(),
                             )
                         },
                     )
@@ -398,6 +479,83 @@ internal object ProjectDocumentCodec {
             )
         },
     )
+
+    private fun Overlay.toDocument(): OverlayDocumentV6 {
+        val text = content as? OverlayContent.Text
+        return OverlayDocumentV6(
+            type = if (text != null) OverlayTypeV6.TEXT else OverlayTypeV6.STICKER,
+            text = text?.text,
+            style = text?.style?.let { style ->
+                TextStyleDocumentV6(
+                    font = style.font.key,
+                    bold = style.bold,
+                    italic = style.italic,
+                    size = style.sizeFraction,
+                    color = style.color.toHex(),
+                    align = when (style.align) {
+                        TextAlign.LEFT -> TextAlignV6.LEFT
+                        TextAlign.CENTER -> TextAlignV6.CENTER
+                        TextAlign.RIGHT -> TextAlignV6.RIGHT
+                    },
+                    outline = style.outline?.let { OutlineDocumentV6(it.color.toHex(), it.widthFraction) },
+                    shadow = style.shadow?.let { ShadowDocumentV6(it.color.toHex(), it.blurFraction, it.offsetXFraction, it.offsetYFraction) },
+                    background = style.background?.let { BackgroundDocumentV6(it.color.toHex(), it.paddingFraction, it.cornerFraction) },
+                )
+            },
+            centerX = transform.centerX,
+            centerY = transform.centerY,
+            scale = transform.scale,
+            rotationDegrees = transform.rotationDegrees,
+            opacity = transform.opacity,
+        )
+    }
+
+    /**
+     * Lenient, like audio: out-of-range numbers are brought into range, an
+     * unreadable color becomes the default, and an unknown font reads as
+     * sans-serif, instead of failing the whole project.
+     */
+    private fun OverlayDocumentV6.toModel(): Overlay {
+        val content = when (type) {
+            OverlayTypeV6.TEXT -> OverlayContent.Text(
+                text = text.orEmpty().take(OverlayContent.Text.MAX_LENGTH),
+                style = style?.toModel() ?: TextStyle(),
+            )
+            OverlayTypeV6.STICKER -> OverlayContent.Sticker
+        }
+        return Overlay(content, OverlayTransform.coerced(centerX, centerY, scale, rotationDegrees, opacity))
+    }
+
+    private fun TextStyleDocumentV6.toModel() = TextStyle(
+        font = OverlayFont.fromKey(font),
+        bold = bold,
+        italic = italic,
+        sizeFraction = fraction(size, TextStyle.MIN_SIZE, TextStyle.MAX_SIZE, TextStyle.DEFAULT_SIZE),
+        color = Argb.parse(color) ?: Argb.WHITE,
+        align = when (align) {
+            TextAlignV6.LEFT -> TextAlign.LEFT
+            TextAlignV6.CENTER -> TextAlign.CENTER
+            TextAlignV6.RIGHT -> TextAlign.RIGHT
+        },
+        outline = outline?.let { TextOutline(Argb.parse(it.color) ?: Argb.BLACK, fraction(it.width, TextOutline.MIN_WIDTH, TextOutline.MAX_WIDTH, 0.08f)) },
+        shadow = shadow?.let {
+            TextShadow(
+                color = Argb.parse(it.color) ?: Argb.BLACK,
+                blurFraction = fraction(it.blur, 0f, TextShadow.MAX_BLUR, 0.08f),
+                offsetXFraction = fraction(it.offsetX, -TextShadow.MAX_OFFSET, TextShadow.MAX_OFFSET, 0f),
+                offsetYFraction = fraction(it.offsetY, -TextShadow.MAX_OFFSET, TextShadow.MAX_OFFSET, 0f),
+            )
+        },
+        background = background?.let {
+            TextBackground(
+                color = Argb.parse(it.color) ?: Argb.BLACK,
+                paddingFraction = fraction(it.padding, 0f, TextBackground.MAX_PADDING, 0.25f),
+                cornerFraction = fraction(it.corner, 0f, TextBackground.MAX_CORNER, 0.2f),
+            )
+        },
+    )
+
+    private fun fraction(value: Float, min: Float, max: Float, default: Float): Float = if (value.isFinite()) value.coerceIn(min, max) else default
 
     private fun ClipAudio.toDocument() = ClipAudioDocumentV5(
         volume = volume,
@@ -470,14 +628,17 @@ internal object ProjectDocumentCodec {
                                 null -> null
                             },
                             clips = track.clips.map { clip ->
+                                val overlay = clip.overlay?.toModel()
                                 Clip(
                                     id = ClipId(clip.id),
-                                    mediaId = MediaId(clip.mediaId),
+                                    // A text overlay never uses media, even if a hand-edited file names some.
+                                    mediaId = clip.mediaId?.takeUnless { overlay?.isText == true }?.let(::MediaId),
                                     startUs = clip.startUs,
                                     sourceInUs = clip.sourceInUs,
                                     durationUs = clip.durationUs,
                                     effects = clip.effects.map { ClipEffect(it.id, it.type, it.enabled, it.params) },
                                     audio = clip.audio?.toModel() ?: ClipAudio.DEFAULT,
+                                    overlay = overlay,
                                 )
                             },
                         )
@@ -551,7 +712,11 @@ internal object ProjectDocumentCodec {
 
     // ---- Shared ----
 
-    private fun TrackKindV3.toModel() = if (this == TrackKindV3.VIDEO) TrackKind.VIDEO else TrackKind.AUDIO
+    private fun TrackKindV3.toModel() = when (this) {
+        TrackKindV3.VIDEO -> TrackKind.VIDEO
+        TrackKindV3.AUDIO -> TrackKind.AUDIO
+        TrackKindV3.OVERLAY -> TrackKind.OVERLAY
+    }
 
     private fun mediaModel(
         id: String,

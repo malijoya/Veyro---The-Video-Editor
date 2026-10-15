@@ -72,7 +72,7 @@ class MediaPreviewViewModelTest {
         override val summaries: Flow<List<com.editor.veyro.data.project.ProjectSummary>> = saved.map { all -> all.map(com.editor.veyro.data.project.ProjectSummary::of) }
         override fun project(id: ProjectId) = saved.map { all -> all.firstOrNull { it.id == id } }
         override suspend fun create(name: String, media: List<MediaRef>, settings: com.editor.veyro.core.model.project.ProjectSettings?) = error("unused")
-        override suspend fun addMedia(id: ProjectId, media: List<MediaRef>): Int? = error("unused")
+        override suspend fun addMedia(id: ProjectId, media: List<MediaRef>, arrange: Boolean): Int? = error("unused")
         override suspend fun updateTimeline(id: ProjectId, timeline: com.editor.veyro.core.model.timeline.Timeline) = false
         override suspend fun updateSettings(id: ProjectId, settings: com.editor.veyro.core.model.project.ProjectSettings): Boolean {
             saved.value = saved.value.map { if (it.id == id) it.copy(settings = settings, timeline = it.timeline?.copy(frameRate = settings.frameRate)) else it }

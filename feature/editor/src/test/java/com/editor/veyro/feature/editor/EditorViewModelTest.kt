@@ -27,6 +27,9 @@ import com.editor.veyro.core.model.audio.Waveform
 import com.editor.veyro.core.model.audio.WaveformBuilder
 import com.editor.veyro.core.model.audio.WaveformSource
 import com.editor.veyro.core.model.project.AudioTrackInfo
+import com.editor.veyro.core.model.overlay.OverlayContent
+import com.editor.veyro.core.model.overlay.OverlayTransform
+import com.editor.veyro.core.timeline.LayerMove
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
@@ -96,9 +99,11 @@ class EditorViewModelTest {
         override val summaries: Flow<List<com.editor.veyro.data.project.ProjectSummary>> = saved.map { all -> all.map(com.editor.veyro.data.project.ProjectSummary::of) }
         override fun project(id: ProjectId) = saved.map { all -> all.firstOrNull { it.id == id } }
         override suspend fun create(name: String, media: List<MediaRef>, settings: com.editor.veyro.core.model.project.ProjectSettings?) = error("unused")
-        override suspend fun addMedia(id: ProjectId, media: List<MediaRef>): Int? {
+        override suspend fun addMedia(id: ProjectId, media: List<MediaRef>, arrange: Boolean): Int? {
             saved.value = saved.value.map {
-                if (it.id == id) it.copy(media = it.media + media, timeline = it.timeline?.let { t -> DefaultArrangement.append(t, media) }) else it
+                if (it.id != id) return@map it
+                val timeline = if (arrange) it.timeline?.let { t -> DefaultArrangement.append(t, media) } else it.timeline ?: DefaultArrangement.timelineFor(it)
+                it.copy(media = it.media + media, timeline = timeline)
             }
             return media.size
         }
@@ -136,6 +141,7 @@ class EditorViewModelTest {
         repository: ProjectRepository,
         saved: SavedStateHandle = SavedStateHandle(),
         waveforms: WaveformSource = WaveformSource.NONE,
+        images: ImageImporter = ImageImporter.NONE,
     ): EditorViewModel {
         val vm = EditorViewModel(
             savedState = saved,
@@ -146,6 +152,7 @@ class EditorViewModelTest {
             autosave = ProjectAutosave(repository, kotlinx.coroutines.CoroutineScope(UnconfinedTestDispatcher(testScheduler)), delayMs = 0),
             waveforms = waveforms,
             newClipId = { ClipId("split-${nextClip++}") },
+            images = images,
         )
         backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.uiState.collect {} }
         return vm
@@ -528,6 +535,128 @@ class EditorViewModelTest {
         // Camera sound and music overlap at 0.9 each: the preview mix is turned down there.
         val plan = engines.single().timelines.last()
         assertFalse(plan.video.first().audio!!.isUnity)
+    }
+
+    // ---------------- Text and stickers ----------------
+
+    @Test
+    fun `new text goes at the playhead above the video, is selected, and is drawn by the editing canvas`() = runTest {
+        val vm = viewModel(FakeRepository(project(media("v", MediaKind.VIDEO, 6_000_000))))
+        vm.controller.attach()
+        vm.addText("Hello", atUs = 1_010_000) // Snapped to frame 30 at 30 fps.
+
+        val state = vm.ready()
+        val overlay = state.overlays.single()
+        assertEquals(1_000_000L, overlay.startUs)
+        assertEquals(1_000_000L + OVERLAY_DURATION_US, overlay.endUs)
+        assertEquals(OverlayContent.Text("Hello", (overlay.overlay.content as OverlayContent.Text).style), overlay.overlay.content)
+        assertEquals(overlay.clipId, state.selectedOverlay?.clipId)
+        assertEquals(TrackKind.OVERLAY, state.tracks.first().kind) // A lane above the main track.
+        assertEquals("Hello", state.tracks.first().clips.single().title)
+        assertTrue(vm.ready().canUndo)
+
+        // While selected, the player leaves it out (the canvas draws it live). Once deselected, the player draws it.
+        assertTrue(engines.single().timelines.last().overlays.isEmpty())
+        vm.selectClip(null)
+        assertEquals(listOf(overlay.clipId.value), engines.single().timelines.last().overlays.map { it.clipId })
+    }
+
+    @Test
+    fun `text added at the end of the video is placed to end there`() = runTest {
+        val vm = viewModel(FakeRepository(project(media("v", MediaKind.VIDEO, 6_000_000))))
+        vm.addText("End", atUs = 6_000_000)
+        assertEquals(6_000_000L, vm.ready().overlays.single().endUs)
+    }
+
+    @Test
+    fun `overlay changes in progress show at once and save as one undo step`() = runTest {
+        val repository = FakeRepository(project(media("v", MediaKind.VIDEO, 6_000_000)))
+        val vm = viewModel(repository)
+        vm.controller.attach()
+        vm.addText("Hi", atUs = 0)
+        val added = vm.ready().overlays.single()
+        val saves = repository.timelineSaves
+        val loads = engines.single().timelines.size
+
+        // A drag: many changes, shown at once, nothing saved and no player reload.
+        val steps = (1..5).map { added.overlay.copy(transform = OverlayTransform(centerX = 0.5f + it * 0.05f)) }
+        steps.forEach { vm.previewOverlay(added.clipId, it) }
+        assertEquals(steps.last(), vm.ready().selectedOverlay!!.overlay)
+        assertEquals(saves, repository.timelineSaves)
+        assertEquals(loads, engines.single().timelines.size)
+
+        vm.commitOverlay()
+        assertEquals(saves + 1, repository.timelineSaves)
+        assertEquals(steps.last(), repository.saved.value.single().timeline!!.findClip(added.clipId)!!.overlay)
+
+        vm.undo()
+        assertEquals(added.overlay, vm.ready().overlays.single().overlay)
+        vm.undo()
+        assertTrue(vm.ready().overlays.isEmpty())
+        assertTrue(vm.ready().tracks.none { it.kind == TrackKind.OVERLAY }) // The empty lane is gone too.
+        vm.redo()
+        vm.redo()
+        assertEquals(steps.last(), vm.ready().overlays.single().overlay)
+    }
+
+    @Test
+    fun `selecting something else saves an overlay change in progress`() = runTest {
+        val repository = FakeRepository(project(media("v", MediaKind.VIDEO, 6_000_000)))
+        val vm = viewModel(repository)
+        vm.addText("Hi", atUs = 0)
+        val added = vm.ready().overlays.single()
+        val moved = added.overlay.copy(transform = OverlayTransform(centerY = 0.9f))
+        vm.previewOverlay(added.clipId, moved)
+        vm.selectClip(ClipId("clip-v"))
+        assertEquals(moved, repository.saved.value.single().timeline!!.findClip(added.clipId)!!.overlay)
+        assertEquals(ClipId("clip-v"), vm.ready().selectedClip?.id)
+    }
+
+    @Test
+    fun `stickers come from the project's images or the device, and stay off the main track`() = runTest {
+        val picked = media("pic", MediaKind.IMAGE)
+        val repository = FakeRepository(project(media("v", MediaKind.VIDEO, 6_000_000)))
+        val vm = viewModel(repository, images = ImageImporter { uri -> picked.takeIf { uri == "content://pic" } })
+        vm.importSticker("content://pic", atUs = 0)
+
+        val sticker = vm.ready().overlays.single()
+        assertEquals("content://pic", sticker.imageUri)
+        assertEquals(1920, sticker.imageWidthPx)
+        assertTrue(repository.saved.value.single().media.any { it.id == MediaId("pic") })
+        assertEquals(listOf("clip-v"), vm.ready().main().clips.map { it.id.value })
+        assertEquals(listOf(StickerChoice(MediaId("pic"), "content://pic", "pic.file")), vm.ready().stickerChoices)
+
+        // Again from the project: the same image, no second copy in the media.
+        vm.addSticker(MediaId("pic"), atUs = 0)
+        assertEquals(2, vm.ready().overlays.size)
+        assertEquals(1, repository.saved.value.single().media.count { it.uri == "content://pic" })
+
+        // An image that can't be used is reported.
+        vm.importSticker("content://unreadable", atUs = 0)
+        assertEquals(EditorMessage.STICKER_UNAVAILABLE, vm.ready().message)
+    }
+
+    @Test
+    fun `layer controls, duplicates and their messages`() = runTest {
+        val vm = viewModel(FakeRepository(project(media("v", MediaKind.VIDEO, 6_000_000))))
+        vm.addText("Under", atUs = 0)
+        vm.addText("Over", atUs = 0)
+        val over = vm.ready().selectedOverlay!!
+        assertEquals(listOf("Under", "Over"), vm.ready().overlays.map { (it.overlay.content as OverlayContent.Text).text }) // Bottom first.
+
+        vm.arrangeLayer(over.clipId, LayerMove.FORWARD)
+        assertEquals(EditorMessage.LAYER_ALREADY_FRONT, vm.ready().message)
+        vm.messageShown()
+        vm.arrangeLayer(over.clipId, LayerMove.TO_BACK)
+        assertEquals(listOf("Over", "Under"), vm.ready().overlays.map { (it.overlay.content as OverlayContent.Text).text })
+        vm.arrangeLayer(over.clipId, LayerMove.BACKWARD)
+        assertEquals(EditorMessage.LAYER_ALREADY_BACK, vm.ready().message)
+
+        vm.duplicateOverlay(over.clipId)
+        val copy = vm.ready().selectedOverlay!!
+        assertEquals(3, vm.ready().overlays.size)
+        assertEquals(vm.ready().overlays.last().clipId, copy.clipId) // The copy is on top, and selected.
+        assertEquals(over.overlay.transform.centerX + 0.03f, copy.overlay.transform.centerX, 0.0001f)
     }
 
     private companion object {

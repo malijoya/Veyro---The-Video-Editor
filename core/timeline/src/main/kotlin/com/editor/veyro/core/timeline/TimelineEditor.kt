@@ -1,8 +1,12 @@
 package com.editor.veyro.core.timeline
 
+import com.editor.veyro.core.model.overlay.OverlayContent
+import com.editor.veyro.core.model.project.MediaKind
 import com.editor.veyro.core.model.timeline.Clip
 import com.editor.veyro.core.model.timeline.Timeline
 import com.editor.veyro.core.model.timeline.Track
+import com.editor.veyro.core.model.timeline.TrackId
+import com.editor.veyro.core.model.timeline.TrackKind
 import kotlin.math.abs
 
 /**
@@ -16,30 +20,43 @@ import kotlin.math.abs
  *   `sourceOut <= media duration`. Photos have no source limit.
  * - Clips never overlap, and nothing starts before 0.
  * - The magnetic main track stays packed from 0 after every edit.
+ * - Overlay tracks that end up empty are removed, so the stack of overlay
+ *   lanes never fills with blank rows. (Undo brings them back: history
+ *   records track changes too.)
  *
  * A request beyond a limit stops at the limit (a drag stops at the
  * neighbour). Only edits that can't happen at all are rejected.
  */
 public object TimelineEditor {
 
-    public fun apply(timeline: Timeline, command: EditCommand, context: EditContext): EditResult = when (command) {
-        is EditCommand.TrimStart -> trimStart(timeline, command, context)
-        is EditCommand.TrimEnd -> trimEnd(timeline, command, context)
-        is EditCommand.Split -> split(timeline, command, context)
-        is EditCommand.Move -> move(timeline, command)
-        is EditCommand.Delete -> delete(timeline, command)
-        is EditCommand.CloseGaps -> closeGaps(timeline, command)
-        is EditCommand.SetClipAudio -> setClipAudio(timeline, command, context)
-        is EditCommand.SetTrackAudio -> setTrackAudio(timeline, command)
-        is EditCommand.MoveToTrack -> moveToTrack(timeline, command)
+    public fun apply(timeline: Timeline, command: EditCommand, context: EditContext): EditResult {
+        val result = when (command) {
+            is EditCommand.TrimStart -> trimStart(timeline, command, context)
+            is EditCommand.TrimEnd -> trimEnd(timeline, command, context)
+            is EditCommand.Split -> split(timeline, command, context)
+            is EditCommand.Move -> move(timeline, command)
+            is EditCommand.Delete -> delete(timeline, command)
+            is EditCommand.CloseGaps -> closeGaps(timeline, command)
+            is EditCommand.SetClipAudio -> setClipAudio(timeline, command, context)
+            is EditCommand.SetTrackAudio -> setTrackAudio(timeline, command)
+            is EditCommand.MoveToTrack -> moveToTrack(timeline, command)
+            is EditCommand.AddOverlay -> addOverlay(timeline, command, context)
+            is EditCommand.SetOverlay -> setOverlay(timeline, command)
+            is EditCommand.ArrangeLayer -> arrangeLayer(timeline, command)
+        }
+        return if (result is EditResult.Applied) result.copy(timeline = withoutEmptyOverlayTracks(result.timeline)) else result
     }
+
+    /** The bounds an edit checks a clip against. Text overlays have no file and behave like photos. */
+    private fun boundsOf(clip: Clip, context: EditContext): MediaBounds? =
+        clip.mediaId?.let { context.media[it] } ?: MediaBounds.TEXT.takeIf { clip.mediaId == null }
 
     // ---- Trim ----
 
     private fun trimStart(timeline: Timeline, command: EditCommand.TrimStart, context: EditContext): EditResult {
         val located = locate(timeline, command.clipId) ?: return EditResult.Rejected(EditRejection.CLIP_NOT_FOUND)
         val (track, index, clip) = located
-        val bounds = context.media[clip.mediaId] ?: return EditResult.Rejected(EditRejection.MEDIA_NOT_FOUND)
+        val bounds = boundsOf(clip, context) ?: return EditResult.Rejected(EditRejection.MEDIA_NOT_FOUND)
         val magnetic = timeline.isMagnetic(track.id)
         val minDuration = timeline.minClipDurationUs
 
@@ -64,7 +81,7 @@ public object TimelineEditor {
     private fun trimEnd(timeline: Timeline, command: EditCommand.TrimEnd, context: EditContext): EditResult {
         val located = locate(timeline, command.clipId) ?: return EditResult.Rejected(EditRejection.CLIP_NOT_FOUND)
         val (track, index, clip) = located
-        val bounds = context.media[clip.mediaId] ?: return EditResult.Rejected(EditRejection.MEDIA_NOT_FOUND)
+        val bounds = boundsOf(clip, context) ?: return EditResult.Rejected(EditRejection.MEDIA_NOT_FOUND)
         val magnetic = timeline.isMagnetic(track.id)
 
         var newDuration = command.newEndUs - clip.startUs
@@ -83,7 +100,7 @@ public object TimelineEditor {
     private fun split(timeline: Timeline, command: EditCommand.Split, context: EditContext): EditResult {
         val located = locate(timeline, command.clipId) ?: return EditResult.Rejected(EditRejection.CLIP_NOT_FOUND)
         val (track, index, clip) = located
-        val bounds = context.media[clip.mediaId] ?: return EditResult.Rejected(EditRejection.MEDIA_NOT_FOUND)
+        val bounds = boundsOf(clip, context) ?: return EditResult.Rejected(EditRejection.MEDIA_NOT_FOUND)
         val at = command.atUs
         if (at <= clip.startUs || at >= clip.endUs) return EditResult.Rejected(EditRejection.OUTSIDE_CLIP)
         val minDuration = timeline.minClipDurationUs
@@ -103,6 +120,7 @@ public object TimelineEditor {
             durationUs = clip.endUs - at,
             effects = clip.effects, // Both parts keep the clip's effects.
             audio = clip.audio.copy(fadeInUs = 0),
+            overlay = clip.overlay, // Both parts show the same text or sticker.
         )
         val clips = track.clips.toMutableList().apply {
             set(index, left)
@@ -183,7 +201,7 @@ public object TimelineEditor {
     private fun setClipAudio(timeline: Timeline, command: EditCommand.SetClipAudio, context: EditContext): EditResult {
         val located = locate(timeline, command.clipId) ?: return EditResult.Rejected(EditRejection.CLIP_NOT_FOUND)
         val (track, index, clip) = located
-        val bounds = context.media[clip.mediaId] ?: return EditResult.Rejected(EditRejection.MEDIA_NOT_FOUND)
+        val bounds = boundsOf(clip, context) ?: return EditResult.Rejected(EditRejection.MEDIA_NOT_FOUND)
         if (!bounds.hasAudio || bounds.isStill) return EditResult.Rejected(EditRejection.NO_AUDIO)
         val audio = command.audio.copy(
             fadeInUs = command.audio.fadeInUs.coerceAtMost(clip.durationUs),
@@ -214,6 +232,114 @@ public object TimelineEditor {
         val destination = target.copy(clips = (target.clips + moved).sortedBy { it.startUs })
         return EditResult.Applied(timeline.withTrack(source).withTrack(destination), clip.id)
     }
+
+    // ---- Overlays ----
+
+    private fun addOverlay(timeline: Timeline, command: EditCommand.AddOverlay, context: EditContext): EditResult {
+        val isText = command.overlay.content is OverlayContent.Text
+        if (isText != (command.mediaId == null)) return EditResult.Rejected(EditRejection.UNSUPPORTED_MEDIA)
+        command.mediaId?.let { id ->
+            val bounds = context.media[id] ?: return EditResult.Rejected(EditRejection.MEDIA_NOT_FOUND)
+            if (bounds.kind != MediaKind.IMAGE) return EditResult.Rejected(EditRejection.UNSUPPORTED_MEDIA)
+        }
+        val clip = Clip(
+            id = context.newClipId(),
+            mediaId = command.mediaId,
+            startUs = command.startUs.coerceAtLeast(0),
+            sourceInUs = 0,
+            durationUs = command.durationUs.coerceAtLeast(timeline.minClipDurationUs),
+            overlay = command.overlay,
+        )
+        val stack = timeline.overlayTracks
+        val topmost = stack.indexOfFirst { it.overlaps(clip) }
+        val placed = when {
+            topmost >= 0 -> placeAbove(timeline, clip, stack[topmost].id)
+            // Nothing overlaps, so every overlay track has room. Use the top one, or start the stack above the main track.
+            stack.isNotEmpty() -> timeline.withTrack(stack.first().withClip(clip))
+            else -> insertTrack(timeline, clip, at = timeline.mainTrack?.let { timeline.tracks.indexOf(it) } ?: 0)
+        }
+        return EditResult.Applied(placed, clip.id)
+    }
+
+    private fun setOverlay(timeline: Timeline, command: EditCommand.SetOverlay): EditResult {
+        val located = locate(timeline, command.clipId) ?: return EditResult.Rejected(EditRejection.CLIP_NOT_FOUND)
+        val (track, index, clip) = located
+        val current = clip.overlay ?: return EditResult.Rejected(EditRejection.NOT_AN_OVERLAY)
+        if ((current.content is OverlayContent.Text) != (command.overlay.content is OverlayContent.Text)) {
+            return EditResult.Rejected(EditRejection.NOT_AN_OVERLAY)
+        }
+        if (current == command.overlay) return EditResult.Rejected(EditRejection.NO_CHANGE)
+        return replaceClip(timeline, track, index, clip.copy(overlay = command.overlay))
+    }
+
+    /**
+     * Moves an overlay to another lane so it sits above or below the
+     * overlays it overlaps in time. Its time and look don't change. A lane is
+     * reused when it has room at that layer; otherwise one is inserted.
+     */
+    private fun arrangeLayer(timeline: Timeline, command: EditCommand.ArrangeLayer): EditResult {
+        val located = locate(timeline, command.clipId) ?: return EditResult.Rejected(EditRejection.CLIP_NOT_FOUND)
+        val (track, index, clip) = located
+        if (track.kind != TrackKind.OVERLAY) return EditResult.Rejected(EditRejection.NOT_AN_OVERLAY)
+        // Take the clip off its lane first. The lane stays (possibly empty) so positions are stable, and is pruned afterwards.
+        val without = timeline.withTrack(track.copy(clips = track.clips.toMutableList().apply { removeAt(index) }))
+        val stack = without.overlayTracks
+        val own = stack.indexOfFirst { it.id == track.id }
+        val overlapping = stack.indices.filter { it != own && stack[it].overlaps(clip) }
+        val placed = when (command.move) {
+            LayerMove.FORWARD -> overlapping.lastOrNull { it < own }?.let { placeAbove(without, clip, stack[it].id) }
+            LayerMove.TO_FRONT -> overlapping.firstOrNull()?.takeIf { it < own }?.let { placeAbove(without, clip, stack[it].id) }
+            LayerMove.BACKWARD -> overlapping.firstOrNull { it > own }?.let { placeBelow(without, clip, stack[it].id) }
+            LayerMove.TO_BACK -> overlapping.lastOrNull()?.takeIf { it > own }?.let { placeBelow(without, clip, stack[it].id) }
+        } ?: return EditResult.Rejected(EditRejection.NO_CHANGE) // Already at that end of its stack.
+        return EditResult.Applied(placed, clip.id)
+    }
+
+    /**
+     * [clip] stacked directly above the overlay track [anchor]: on the lane
+     * just above it when that lane is free at the clip's time, else on a new
+     * lane inserted between them.
+     */
+    private fun placeAbove(timeline: Timeline, clip: Clip, anchor: TrackId): Timeline {
+        val stack = timeline.overlayTracks
+        val position = stack.indexOfFirst { it.id == anchor }
+        val above = stack.getOrNull(position - 1)
+        if (above != null && !above.overlaps(clip)) return timeline.withTrack(above.withClip(clip))
+        return insertTrack(timeline, clip, at = timeline.tracks.indexOfFirst { it.id == anchor })
+    }
+
+    /** [clip] stacked directly below the overlay track [anchor], reusing the lane below when it has room. */
+    private fun placeBelow(timeline: Timeline, clip: Clip, anchor: TrackId): Timeline {
+        val stack = timeline.overlayTracks
+        val position = stack.indexOfFirst { it.id == anchor }
+        val below = stack.getOrNull(position + 1)
+        if (below != null && !below.overlaps(clip)) return timeline.withTrack(below.withClip(clip))
+        return insertTrack(timeline, clip, at = timeline.tracks.indexOfFirst { it.id == anchor } + 1)
+    }
+
+    /** A new overlay lane holding [clip], inserted at list position [at]. */
+    private fun insertTrack(timeline: Timeline, clip: Clip, at: Int): Timeline {
+        val ids = timeline.tracks.map { it.id.value }.toSet()
+        var n = 1
+        while ("$OVERLAY_TRACK_PREFIX$n" in ids) n++
+        val lane = Track(TrackId("$OVERLAY_TRACK_PREFIX$n"), TrackKind.OVERLAY, listOf(clip))
+        return timeline.copy(tracks = timeline.tracks.toMutableList().apply { add(at.coerceIn(0, size), lane) })
+    }
+
+    private fun Track.overlaps(clip: Clip): Boolean = clips.any { it.startUs < clip.endUs && clip.startUs < it.endUs }
+
+    private fun Track.withClip(clip: Clip): Track = copy(clips = (clips + clip).sortedBy { it.startUs })
+
+    /** Removes overlay tracks without clips. Other tracks are kept even when empty. */
+    internal fun withoutEmptyOverlayTracks(timeline: Timeline): Timeline =
+        if (timeline.tracks.none { it.kind == TrackKind.OVERLAY && it.clips.isEmpty() }) {
+            timeline
+        } else {
+            timeline.copy(tracks = timeline.tracks.filterNot { it.kind == TrackKind.OVERLAY && it.clips.isEmpty() })
+        }
+
+    /** IDs of overlay lanes the editor creates: "overlay-1", "overlay-2", ... */
+    internal const val OVERLAY_TRACK_PREFIX: String = "overlay-"
 
     // ---- Helpers ----
 

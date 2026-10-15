@@ -2,6 +2,14 @@ package com.editor.veyro.feature.editor
 
 import com.editor.veyro.core.model.audio.TrackAudio
 import com.editor.veyro.core.model.audio.ClipAudio
+import com.editor.veyro.core.model.overlay.Overlay
+import com.editor.veyro.core.model.overlay.OverlayContent
+import com.editor.veyro.core.model.project.MediaId
+import com.editor.veyro.core.timeline.LayerMove
+import com.editor.veyro.feature.editor.overlay.OverlayActions
+import com.editor.veyro.feature.editor.overlay.OverlayCanvas
+import com.editor.veyro.feature.editor.overlay.OverlayControls
+import com.editor.veyro.feature.editor.overlay.StickerSheet
 import android.os.SystemClock
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
@@ -140,6 +148,23 @@ public fun EditorRoute(viewModel: EditorViewModel, onBack: () -> Unit, onExport:
             onSetClipAudio = viewModel::setClipAudio,
             onSetTrackAudio = viewModel::setTrackAudio,
             onMoveToTrack = viewModel::moveClipToTrack,
+            onAddText = { text ->
+                viewModel.controller.pause()
+                viewModel.addText(text, viewport.playheadUs)
+            },
+            onAddSticker = { mediaId ->
+                viewModel.controller.pause()
+                viewModel.addSticker(mediaId, viewport.playheadUs)
+            },
+            onImportSticker = { uri ->
+                viewModel.controller.pause()
+                viewModel.importSticker(uri, viewport.playheadUs)
+            },
+            onPreviewOverlay = viewModel::previewOverlay,
+            onCommitOverlay = viewModel::commitOverlay,
+            onSetOverlay = viewModel::setOverlay,
+            onArrangeLayer = viewModel::arrangeLayer,
+            onDuplicateOverlay = viewModel::duplicateOverlay,
         ),
     )
 }
@@ -160,6 +185,14 @@ internal class EditActions(
     val onSetClipAudio: (ClipId, ClipAudio) -> Unit = { _, _ -> },
     val onSetTrackAudio: (TrackId, TrackAudio) -> Unit = { _, _ -> },
     val onMoveToTrack: (ClipId, TrackId) -> Unit = { _, _ -> },
+    val onAddText: (String) -> Unit = {},
+    val onAddSticker: (MediaId) -> Unit = {},
+    val onImportSticker: (String) -> Unit = {},
+    val onPreviewOverlay: (ClipId, Overlay) -> Unit = { _, _ -> },
+    val onCommitOverlay: () -> Unit = {},
+    val onSetOverlay: (ClipId, Overlay) -> Unit = { _, _ -> },
+    val onArrangeLayer: (ClipId, LayerMove) -> Unit = { _, _ -> },
+    val onDuplicateOverlay: (ClipId) -> Unit = {},
 )
 
 /**
@@ -276,6 +309,9 @@ private fun EditorMessageEffect(message: EditorMessage?, snackbarHostState: Snac
         EditorMessage.NO_GAPS -> stringResource(R.string.editor_msg_no_gaps)
         EditorMessage.HISTORY_OUT_OF_DATE -> stringResource(R.string.editor_msg_history_out_of_date)
         EditorMessage.CLIP_HAS_NO_AUDIO -> stringResource(R.string.editor_no_audio_stream)
+        EditorMessage.STICKER_UNAVAILABLE -> stringResource(R.string.editor_msg_sticker_unavailable)
+        EditorMessage.LAYER_ALREADY_FRONT -> stringResource(R.string.editor_msg_layer_front)
+        EditorMessage.LAYER_ALREADY_BACK -> stringResource(R.string.editor_msg_layer_back)
         null -> null
     }
     LaunchedEffect(message) {
@@ -312,6 +348,20 @@ private fun EditorContent(
         }
     }
 
+    // A new text opens for typing once it is selected; a tap on the selected text in the preview does too.
+    var pendingNewText by remember { mutableStateOf(false) }
+    var focusTextOf by remember { mutableStateOf<ClipId?>(null) }
+    var stickerSheetOpen by rememberSaveable { mutableStateOf(false) }
+    val selectedOverlay = state.selectedOverlay
+    LaunchedEffect(selectedOverlay?.clipId) {
+        val added = selectedOverlay
+        if (pendingNewText && added != null && added.overlay.content is OverlayContent.Text) {
+            focusTextOf = added.clipId
+            pendingNewText = false
+        }
+    }
+    val overlayDescription = selectedOverlay?.let { overlayLabel(it.overlay) }.orEmpty()
+
     Column(Modifier.fillMaxSize()) {
         Box(
             contentAlignment = Alignment.Center,
@@ -328,6 +378,25 @@ private fun EditorContent(
                     .background(Color.Black),
             ) {
                 PreviewStage(state, playback, surface)
+                if (state.previewTrackKind == TrackKind.VIDEO) {
+                    OverlayCanvas(
+                        overlays = state.overlays,
+                        selected = selectedOverlay,
+                        canvasWidthPx = state.canvasWidthPx,
+                        canvasHeightPx = state.canvasHeightPx,
+                        playheadUs = { viewport.playheadUs },
+                        enabled = !state.isDragging,
+                        selectionDescription = overlayDescription,
+                        onSelect = { id ->
+                            onScrubStart() // Editing pauses playback.
+                            onSelectClip(id)
+                        },
+                        onChange = editActions.onPreviewOverlay,
+                        onCommit = editActions.onCommitOverlay,
+                        onEditText = { id -> focusTextOf = id },
+                        modifier = Modifier.matchParentSize(),
+                    )
+                }
             }
         }
         TransportRow(state, playback, viewport, onPlayPause)
@@ -356,9 +425,47 @@ private fun EditorContent(
                 onToggleTrackMute = { track -> editActions.onSetTrackAudio(track.id, track.audio.copy(muted = !track.audio.muted)) },
             )
         }
-        EditToolbar(state, editActions)
-        SelectionBar(state, compact, onClearSelection = { onSelectClip(null) }, onJumpTo = onJumpTo, actions = editActions)
+        EditToolbar(
+            state,
+            editActions,
+            onAddText = { text ->
+                pendingNewText = true
+                editActions.onAddText(text)
+            },
+            onAddSticker = { stickerSheetOpen = true },
+        )
+        SelectionBar(
+            state,
+            compact,
+            onClearSelection = { onSelectClip(null) },
+            onJumpTo = onJumpTo,
+            actions = editActions,
+            focusTextOf = focusTextOf,
+            onTextFocused = { focusTextOf = null },
+        )
     }
+
+    if (stickerSheetOpen) {
+        StickerSheet(
+            choices = state.stickerChoices,
+            onPickProjectImage = { id ->
+                stickerSheetOpen = false
+                editActions.onAddSticker(id)
+            },
+            onPickDeviceImage = { uri ->
+                stickerSheetOpen = false
+                editActions.onImportSticker(uri)
+            },
+            onDismiss = { stickerSheetOpen = false },
+        )
+    }
+}
+
+/** What screen readers say for an overlay: its text, or "Sticker". */
+@Composable
+private fun overlayLabel(overlay: Overlay): String = when (val content = overlay.content) {
+    is OverlayContent.Text -> stringResource(R.string.overlay_a11y_text, content.text.ifBlank { stringResource(R.string.overlay_empty_text) })
+    OverlayContent.Sticker -> stringResource(R.string.overlay_a11y_sticker)
 }
 
 /** "Saved", "Saving…" or a failure, so users know their edits are safe. Announced politely as it changes. */
@@ -467,8 +574,11 @@ private fun TransportRow(state: EditorUiState.Ready, playback: PreviewState, vie
  * - Close gaps appears when the selected clip's track has gaps.
  */
 @Composable
-private fun EditToolbar(state: EditorUiState.Ready, actions: EditActions) {
+private fun EditToolbar(state: EditorUiState.Ready, actions: EditActions, onAddText: (String) -> Unit, onAddSticker: () -> Unit) {
     val track = state.selectedTrack
+    val defaultText = stringResource(R.string.overlay_default_text)
+    // Text and stickers need a picture to sit on.
+    val canOverlay = state.previewTrackKind == TrackKind.VIDEO && !state.isDragging
     Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier
@@ -498,6 +608,14 @@ private fun EditToolbar(state: EditorUiState.Ready, actions: EditActions) {
                 Text(stringResource(R.string.editor_close_gaps))
             }
         }
+        TextButton(onClick = { onAddText(defaultText) }, enabled = canOverlay) {
+            Icon(VeyroIcons.TextFields, contentDescription = null, modifier = Modifier.size(18.dp))
+            Text(stringResource(R.string.editor_add_text), modifier = Modifier.padding(start = Spacing.xs))
+        }
+        TextButton(onClick = onAddSticker, enabled = canOverlay) {
+            Icon(VeyroIcons.Sticker, contentDescription = null, modifier = Modifier.size(18.dp))
+            Text(stringResource(R.string.editor_add_sticker), modifier = Modifier.padding(start = Spacing.xs))
+        }
     }
 }
 
@@ -509,9 +627,12 @@ private fun SelectionBar(
     onClearSelection: () -> Unit,
     onJumpTo: (Long) -> Unit,
     actions: EditActions,
+    focusTextOf: ClipId? = null,
+    onTextFocused: () -> Unit = {},
 ) {
     val clip = state.selectedClip
     val track = state.selectedTrack
+    val overlay = state.selectedOverlay
     // The sound panel opens on demand, so the preview keeps its room on small screens.
     var soundOpen by rememberSaveable { mutableStateOf(false) }
     Surface(color = MaterialTheme.colorScheme.surfaceContainer, modifier = Modifier.fillMaxWidth()) {
@@ -525,14 +646,19 @@ private fun SelectionBar(
             } else {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
-                        Text(clip.title, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        val title = when {
+                            overlay == null -> clip.title
+                            overlay.overlay.content is OverlayContent.Text -> clip.title.ifBlank { stringResource(R.string.overlay_empty_text) }
+                            else -> stringResource(R.string.overlay_a11y_sticker)
+                        }
+                        Text(title, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         Text(
                             stringResource(R.string.editor_clip_timing, DurationFormat.clock(clip.startUs), DurationFormat.clock(clip.durationUs)),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
-                    if (clip.mediaKind != MediaKind.IMAGE) {
+                    if (clip.mediaKind != MediaKind.IMAGE && overlay == null) {
                         TextButton(onClick = { soundOpen = !soundOpen }) {
                             Text(stringResource(if (soundOpen) R.string.editor_sound_hide else R.string.editor_sound))
                         }
@@ -542,7 +668,23 @@ private fun SelectionBar(
                         Icon(Icons.Filled.Close, contentDescription = stringResource(R.string.editor_clear_selection))
                     }
                 }
-                if (soundOpen && track != null && clip.mediaKind != MediaKind.IMAGE) {
+                if (overlay != null) {
+                    OverlayControls(
+                        overlay = overlay,
+                        enabled = !state.isDragging,
+                        focusText = focusTextOf == overlay.clipId,
+                        onFocusHandled = onTextFocused,
+                        actions = OverlayActions(
+                            onPreview = { actions.onPreviewOverlay(overlay.clipId, it) },
+                            onCommit = actions.onCommitOverlay,
+                            onSet = { actions.onSetOverlay(overlay.clipId, it) },
+                            onArrange = { actions.onArrangeLayer(overlay.clipId, it) },
+                            onDuplicate = { actions.onDuplicateOverlay(overlay.clipId) },
+                            onDelete = actions.onDelete,
+                        ),
+                    )
+                }
+                if (soundOpen && track != null && clip.mediaKind != MediaKind.IMAGE && overlay == null) {
                     AudioControls(
                         clip = clip,
                         track = track,
@@ -554,7 +696,7 @@ private fun SelectionBar(
                     )
                 }
             }
-            if (!compact) {
+            if (!compact && overlay == null) {
                 FlowRow(
                     horizontalArrangement = Arrangement.spacedBy(Spacing.sm),
                     verticalArrangement = Arrangement.spacedBy(Spacing.xs),

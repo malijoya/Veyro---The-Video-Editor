@@ -1,7 +1,9 @@
 package com.editor.veyro
 
 import android.content.Context
+import android.net.Uri
 import android.util.Log
+import com.editor.veyro.core.model.project.MediaKind
 import com.editor.veyro.data.project.ProjectAutosave
 import com.editor.veyro.data.project.ProjectFileGateway
 import com.editor.veyro.data.project.ProjectRepository
@@ -10,6 +12,8 @@ import com.editor.veyro.data.project.file.FileProjectRepository
 import com.editor.veyro.data.project.index.RoomProjectIndex
 import com.editor.veyro.media.importer.MediaAccess
 import com.editor.veyro.media.importer.MediaProber
+import com.editor.veyro.media.importer.ProbeResult
+import com.editor.veyro.feature.editor.ImageImporter
 import com.editor.veyro.media.export.ExportPipeline
 import com.editor.veyro.media.export.Exports
 import com.editor.veyro.media.importer.ThumbnailLoader
@@ -56,6 +60,21 @@ class AppContainer(context: Context) {
     val autosave: ProjectAutosave = ProjectAutosave(projects, appScope)
 
     val projectFiles: ProjectFileGateway = ProjectFileGateway(appContext, io)
+
+    /**
+     * Images picked in the editor as stickers: lasting read access where the
+     * picker grants it (recorded on the media, like imports), then the
+     * image's details. Temporary locations and non-images are refused.
+     */
+    val stickerImporter: ImageImporter = ImageImporter { uri ->
+        if (!sourcePolicy.isPermanent(uri)) return@ImageImporter null
+        val parsed = Uri.parse(uri)
+        val persisted = mediaAccess.persist(parsed)
+        when (val probed = mediaProber.probe(parsed)) {
+            is ProbeResult.Success -> probed.media.takeIf { it.kind == MediaKind.IMAGE }?.copy(accessPersisted = persisted)
+            is ProbeResult.Failure -> null
+        }
+    }
 
     /** Renders, verifies and saves exported videos. Each export screen runs its own. */
     fun exportPipeline(): ExportPipeline = Exports.pipeline(appContext)

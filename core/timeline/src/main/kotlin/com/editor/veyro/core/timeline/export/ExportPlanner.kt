@@ -23,9 +23,13 @@ import kotlin.math.roundToInt
  *   picture is cut there. Muted tracks and silent clips are left out.
  * - A mix headroom curve ([MixHeadroom]) that turns overlapping sound down
  *   just enough not to clip, from the media's measured peaks.
+ * - Text and stickers from the overlay tracks, bottom layer first, cut at
+ *   the end of the picture. Empty or fully transparent text is skipped.
+ *   A sticker whose image is unavailable blocks the export, like any other
+ *   missing file.
  *
- * Not rendered yet (reported as [ExportWarning]s): overlay video tracks and
- * clip effects.
+ * Not rendered yet (reported as [ExportWarning]s): extra video tracks
+ * (picture-in-picture) and clip effects.
  */
 public object ExportPlanner {
 
@@ -82,7 +86,7 @@ public object ExportPlanner {
         // ---- Picture track, and the sound of its videos ----
         val pendingVideo = main?.clips.orEmpty().mapNotNull { clip ->
             if (clip.effects.any { it.enabled }) warnings += ExportWarning.EFFECTS_NOT_RENDERED
-            val ref = usable(clip.mediaId) ?: return@mapNotNull null
+            val ref = usable(clip.mediaId ?: return@mapNotNull null) ?: return@mapNotNull null
             if (ref.kind == MediaKind.AUDIO) {
                 // The editor never puts audio on the main track; a hand-edited project might.
                 blockers += ExportBlocker.MEDIA_UNAVAILABLE
@@ -108,7 +112,7 @@ public object ExportPlanner {
                     warnings += ExportWarning.AUDIO_TRIMMED_TO_VIDEO
                     return@mapNotNull null
                 }
-                val ref = usable(clip.mediaId) ?: return@mapNotNull null
+                val ref = usable(clip.mediaId ?: return@mapNotNull null) ?: return@mapNotNull null
                 if (!withinSource(ref, clip.sourceOutUs)) return@mapNotNull null
                 if (clip.endUs > endUs) warnings += ExportWarning.AUDIO_TRIMMED_TO_VIDEO
                 // The envelope covers the whole clip, so a fade-out past the cut keeps its shape up to the cut.
@@ -116,6 +120,41 @@ public object ExportPlanner {
                 if (envelope.isSilent) null else PendingAudio(ref, clip.startUs, minOf(clip.endUs, endUs), envelope)
             }
             pieces.takeIf { it.isNotEmpty() }
+        }
+
+        // ---- Text and stickers, bottom layer first ----
+        val overlays = if (!hasVideo) {
+            emptyList() // An audio-only preview has no picture to draw on.
+        } else {
+            timeline.overlayTracks.asReversed().flatMap { track ->
+                track.clips.mapNotNull { clip ->
+                    val overlay = clip.overlay ?: return@mapNotNull null
+                    if (clip.effects.any { it.enabled }) warnings += ExportWarning.EFFECTS_NOT_RENDERED
+                    if (clip.startUs >= endUs) {
+                        warnings += ExportWarning.OVERLAYS_TRIMMED_TO_VIDEO
+                        return@mapNotNull null
+                    }
+                    if (clip.endUs > endUs) warnings += ExportWarning.OVERLAYS_TRIMMED_TO_VIDEO
+                    val image = clip.mediaId?.let { id -> usable(id) ?: return@mapNotNull null }
+                    if (image != null && image.kind != MediaKind.IMAGE) {
+                        // The editor only makes stickers from images; a hand-edited project might not.
+                        blockers += ExportBlocker.MEDIA_UNAVAILABLE
+                        problemFiles += label(image)
+                        return@mapNotNull null
+                    }
+                    if (!overlay.isVisible) return@mapNotNull null
+                    OverlayLayer(
+                        clipId = clip.id.value,
+                        startUs = clip.startUs,
+                        endUs = minOf(clip.endUs, endUs),
+                        overlay = overlay,
+                        imageUri = image?.uri,
+                        imageWidthPx = image?.displayWidthPx ?: 0,
+                        imageHeightPx = image?.displayHeightPx ?: 0,
+                        imageRotationDegrees = image?.rotationDegrees ?: 0,
+                    )
+                }
+            }
         }
         if (blockers.isNotEmpty()) return ExportPlanResult.Blocked(blockers, problemFiles.toList())
         // An audio-only preview where every track is muted has nothing to play.
@@ -156,7 +195,7 @@ public object ExportPlanner {
             if (cursor < endUs) segments += AudioSegment.Gap(endUs - cursor)
             segments.toList()
         }
-        return ExportPlanResult.Ready(ExportPlan(settings, video, audio, warnings))
+        return ExportPlanResult.Ready(ExportPlan(settings, video, audio, warnings, overlays))
     }
 
     private class PendingVideo(val ref: MediaRef, val clip: Clip, val envelope: GainEnvelope?)

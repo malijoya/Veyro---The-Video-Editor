@@ -418,6 +418,7 @@ private fun warningText(warning: ExportWarning): String = stringResource(
         ExportWarning.AUDIO_TRIMMED_TO_VIDEO -> R.string.export_warning_audio_trimmed
         ExportWarning.MIX_LOWERED_TO_PREVENT_CLIPPING -> R.string.export_warning_mix_lowered
         ExportWarning.AUDIO_NOT_ANALYSED -> R.string.export_warning_not_analysed
+        ExportWarning.OVERLAYS_TRIMMED_TO_VIDEO -> R.string.export_warning_overlays_trimmed
     },
 )
 

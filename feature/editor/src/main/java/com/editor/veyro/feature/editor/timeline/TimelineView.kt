@@ -65,6 +65,7 @@ import com.editor.veyro.core.designsystem.icon.VeyroIcons
 import com.editor.veyro.core.designsystem.theme.Spacing
 import com.editor.veyro.core.model.audio.AudioRole
 import com.editor.veyro.core.model.audio.TrackAudio
+import com.editor.veyro.core.model.overlay.OverlayContent
 import com.editor.veyro.core.model.project.MediaKind
 import com.editor.veyro.core.model.time.DurationFormat
 import com.editor.veyro.core.model.timeline.ClipId
@@ -241,10 +242,15 @@ private fun ZoomBar(viewport: TimelineViewportState) {
 /**
  * A track's name and sound switch. Tapping it mutes or unmutes the track;
  * the mute applies in preview and export. On the main track it mutes the
- * videos' own sound.
+ * videos' own sound. Overlay lanes have no sound, so their label is just a
+ * name.
  */
 @Composable
 private fun TrackLabel(track: TimelineTrackUi, height: Dp, width: Dp, onToggleMute: (TimelineTrackUi) -> Unit) {
+    if (track.kind == TrackKind.OVERLAY) {
+        OverlayTrackLabel(height, width)
+        return
+    }
     val name = stringResource(
         when {
             track.kind == TrackKind.VIDEO -> R.string.editor_track_video
@@ -288,6 +294,23 @@ private fun TrackLabel(track: TimelineTrackUi, height: Dp, width: Dp, onToggleMu
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
         )
+    }
+}
+
+@Composable
+private fun OverlayTrackLabel(height: Dp, width: Dp) {
+    val tint = MaterialTheme.colorScheme.onSurfaceVariant
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+        modifier = Modifier
+            .size(width, height)
+            .padding(vertical = 2.dp)
+            .background(MaterialTheme.colorScheme.surfaceContainer, RoundedCornerShape(topStart = 6.dp, bottomStart = 6.dp))
+            .semantics(mergeDescendants = true) {},
+    ) {
+        Icon(VeyroIcons.Layers, contentDescription = null, tint = tint, modifier = Modifier.size(18.dp))
+        Text(stringResource(R.string.editor_track_overlay), style = MaterialTheme.typography.labelSmall, color = tint, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
 }
 
@@ -385,23 +408,36 @@ private fun TimelineClip(
 ) {
     val currentGestures by rememberUpdatedState(gestures)
     val shape = RoundedCornerShape(6.dp)
-    val container = if (trackKind == TrackKind.VIDEO) MaterialTheme.colorScheme.surfaceContainerHighest else MaterialTheme.colorScheme.secondaryContainer
+    val isText = clip.overlay?.content is OverlayContent.Text
+    val container = when (trackKind) {
+        TrackKind.VIDEO -> MaterialTheme.colorScheme.surfaceContainerHighest
+        TrackKind.AUDIO -> MaterialTheme.colorScheme.secondaryContainer
+        TrackKind.OVERLAY -> MaterialTheme.colorScheme.tertiaryContainer
+    }
+    val labelColor = when (trackKind) {
+        TrackKind.VIDEO -> Color.White
+        TrackKind.AUDIO -> MaterialTheme.colorScheme.onSecondaryContainer
+        TrackKind.OVERLAY -> if (isText) MaterialTheme.colorScheme.onTertiaryContainer else Color.White
+    }
     val placeholder = MaterialTheme.colorScheme.surfaceContainerHigh
     val silent = clip.audio.isSilent || trackAudio.isSilent
     val waveColor = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = if (silent) 0.25f else 0.7f)
     val gainLineColor = MaterialTheme.colorScheme.primary
     val videoWaveColor = Color.White.copy(alpha = if (silent) 0.25f else 0.8f)
     val kindLabel = stringResource(
-        when (clip.mediaKind) {
-            MediaKind.VIDEO -> R.string.editor_clip_video
-            MediaKind.IMAGE -> R.string.editor_clip_photo
-            MediaKind.AUDIO -> R.string.editor_clip_audio
+        when {
+            isText -> R.string.editor_clip_text
+            clip.overlay != null -> R.string.editor_clip_sticker
+            clip.mediaKind == MediaKind.VIDEO -> R.string.editor_clip_video
+            clip.mediaKind == MediaKind.IMAGE -> R.string.editor_clip_photo
+            else -> R.string.editor_clip_audio
         },
     )
+    val title = if (isText) clip.title.ifBlank { stringResource(R.string.overlay_empty_text) } else clip.title
     val description = stringResource(
         R.string.editor_a11y_clip,
         kindLabel,
-        clip.title,
+        title,
         DurationFormat.clock(clip.startUs),
         DurationFormat.clock(clip.durationUs),
     )
@@ -413,7 +449,8 @@ private fun TimelineClip(
             .clip(shape)
             .background(container)
             .drawBehind {
-                if (clip.mediaKind != MediaKind.AUDIO) drawFilmstrip(clip, viewport, thumbnails, placeholder)
+                // Text has no picture of its own; stickers show their image.
+                if (clip.mediaKind != MediaKind.AUDIO && !isText) drawFilmstrip(clip, viewport, thumbnails, placeholder)
                 when {
                     // Audio clips: the waveform fills the clip, under the title.
                     clip.mediaKind == MediaKind.AUDIO ->
@@ -455,19 +492,22 @@ private fun TimelineClip(
             horizontalArrangement = Arrangement.spacedBy(Spacing.xs),
             modifier = Modifier
                 .padding(Spacing.xs)
-                .background(Color.Black.copy(alpha = if (trackKind == TrackKind.VIDEO) 0.45f else 0f), RoundedCornerShape(4.dp))
+                .background(Color.Black.copy(alpha = if (trackKind == TrackKind.VIDEO || (trackKind == TrackKind.OVERLAY && !isText)) 0.45f else 0f), RoundedCornerShape(4.dp))
                 .padding(horizontal = Spacing.xs),
         ) {
             if (trackKind == TrackKind.AUDIO) {
                 Icon(VeyroIcons.MusicNote, contentDescription = null, modifier = Modifier.size(14.dp), tint = MaterialTheme.colorScheme.onSecondaryContainer)
             }
+            if (isText) {
+                Icon(VeyroIcons.TextFields, contentDescription = null, modifier = Modifier.size(14.dp), tint = labelColor)
+            }
             if (clip.hasAudio && clip.audio.muted) {
                 Icon(VeyroIcons.VolumeOff, contentDescription = stringResource(R.string.editor_clip_muted), modifier = Modifier.size(14.dp), tint = MaterialTheme.colorScheme.error)
             }
             Text(
-                clip.title,
+                title,
                 style = MaterialTheme.typography.labelSmall,
-                color = if (trackKind == TrackKind.VIDEO) Color.White else MaterialTheme.colorScheme.onSecondaryContainer,
+                color = labelColor,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )

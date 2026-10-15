@@ -834,4 +834,88 @@ public object VeyroIcons {
             }.also { _mic = it }
         }
     private var _mic: ImageVector? = null
+
+    public val TextFields: ImageVector
+        get() {
+            _textFields?.let { return it }
+            return materialIcon(name = "Veyro.TextFields") {
+                addPath(
+                    pathData = addPathNodes(
+                        "M2.5,4v3h5v12h3V7h5V4H2.5zM21.5,9h-9v3h3v7h3v-7h3V9z",
+                    ),
+                    fill = SolidColor(Color.Black),
+                )
+            }.also { _textFields = it }
+        }
+    private var _textFields: ImageVector? = null
+
+    public val Sticker: ImageVector
+        get() {
+            _sticker?.let { return it }
+            return materialIcon(name = "Veyro.Sticker") {
+                addPath(
+                    pathData = addPathNodes(
+                        "M11.99,2C6.47,2 2,6.48 2,12s4.47,10 9.99,10C17.52,22 22,17.52 22,12S17.52,2 11.99,2zM12,20c-4.42,0 -8,-3.58 -8,-8s3.58,-8 8,-8 8,3.58 8,8 -3.58,8 -8,8zM15.5,11c0.83,0 1.5,-0.67 1.5,-1.5S16.33,8 15.5,8 14,8.67 14,9.5s0.67,1.5 1.5,1.5zM8.5,11c0.83,0 1.5,-0.67 1.5,-1.5S9.33,8 8.5,8 7,8.67 7,9.5 7.67,11 8.5,11zM12,17.5c2.33,0 4.31,-1.46 5.11,-3.5L6.89,14c0.8,2.04 2.78,3.5 5.11,3.5z",
+                    ),
+                    fill = SolidColor(Color.Black),
+                )
+            }.also { _sticker = it }
+        }
+    private var _sticker: ImageVector? = null
+
+    public val Layers: ImageVector
+        get() {
+            _layers?.let { return it }
+            return materialIcon(name = "Veyro.Layers") {
+                addPath(
+                    pathData = addPathNodes(
+                        "M11.99,18.54l-7.37,-5.73L3,14.07l9,7 9,-7 -1.63,-1.27 -7.38,5.74zM12,16l7.36,-5.73L21,9l-9,-7 -9,7 1.63,1.27L12,16z",
+                    ),
+                    fill = SolidColor(Color.Black),
+                )
+            }.also { _layers = it }
+        }
+    private var _layers: ImageVector? = null
+
+    public val AlignLeft: ImageVector
+        get() {
+            _alignLeft?.let { return it }
+            return materialIcon(name = "Veyro.AlignLeft") {
+                addPath(
+                    pathData = addPathNodes(
+                        "M15,15H3v2h12v-2zM15,7H3v2h12V7zM3,13h18v-2H3v2zM3,21h18v-2H3v2zM3,3v2h18V3H3z",
+                    ),
+                    fill = SolidColor(Color.Black),
+                )
+            }.also { _alignLeft = it }
+        }
+    private var _alignLeft: ImageVector? = null
+
+    public val AlignCenter: ImageVector
+        get() {
+            _alignCenter?.let { return it }
+            return materialIcon(name = "Veyro.AlignCenter") {
+                addPath(
+                    pathData = addPathNodes(
+                        "M7,15v2h10v-2H7zM3,21h18v-2H3v2zM3,13h18v-2H3v2zM7,7v2h10V7H7zM3,3v2h18V3H3z",
+                    ),
+                    fill = SolidColor(Color.Black),
+                )
+            }.also { _alignCenter = it }
+        }
+    private var _alignCenter: ImageVector? = null
+
+    public val AlignRight: ImageVector
+        get() {
+            _alignRight?.let { return it }
+            return materialIcon(name = "Veyro.AlignRight") {
+                addPath(
+                    pathData = addPathNodes(
+                        "M3,21h18v-2H3v2zM9,17h12v-2H9v2zM3,13h18v-2H3v2zM9,9h12V7H9v2zM3,3v2h18V3H3z",
+                    ),
+                    fill = SolidColor(Color.Black),
+                )
+            }.also { _alignRight = it }
+        }
+    private var _alignRight: ImageVector? = null
 }

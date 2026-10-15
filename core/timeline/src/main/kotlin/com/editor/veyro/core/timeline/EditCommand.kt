@@ -2,6 +2,7 @@ package com.editor.veyro.core.timeline
 
 import com.editor.veyro.core.model.audio.ClipAudio
 import com.editor.veyro.core.model.audio.TrackAudio
+import com.editor.veyro.core.model.overlay.Overlay
 import com.editor.veyro.core.model.project.MediaId
 import com.editor.veyro.core.model.project.MediaKind
 import com.editor.veyro.core.model.timeline.ClipId
@@ -65,6 +66,43 @@ public sealed interface EditCommand {
      * track reorders with [Move] instead.
      */
     public data class MoveToTrack(val clipId: ClipId, val trackId: TrackId, val toStartUs: Long) : EditCommand
+
+    /**
+     * Adds a text or sticker overlay over `[startUs, startUs + durationUs)`,
+     * stacked above every overlay it overlaps in time. It goes on an existing
+     * overlay track when one has room at that layer; otherwise a new overlay
+     * track is inserted.
+     *
+     * [mediaId] is the sticker's image, and must be null for text.
+     */
+    public data class AddOverlay(val overlay: Overlay, val mediaId: MediaId?, val startUs: Long, val durationUs: Long) : EditCommand
+
+    /**
+     * Replaces an overlay's content and placement: text, style, position,
+     * size, rotation, opacity. Text stays text and a sticker stays a sticker.
+     */
+    public data class SetOverlay(val clipId: ClipId, val overlay: Overlay) : EditCommand
+
+    /** Changes where an overlay sits in the stack of overlays it overlaps in time. */
+    public data class ArrangeLayer(val clipId: ClipId, val move: LayerMove) : EditCommand
+}
+
+/**
+ * Stacking moves. They only consider overlays that overlap the clip in
+ * time; overlays elsewhere on the timeline don't affect what is visible.
+ */
+public enum class LayerMove {
+    /** One step up: above the nearest overlapping overlay that is above it. */
+    FORWARD,
+
+    /** One step down: below the nearest overlapping overlay that is below it. */
+    BACKWARD,
+
+    /** Above every overlapping overlay. */
+    TO_FRONT,
+
+    /** Below every overlapping overlay (still above the main video). */
+    TO_BACK,
 }
 
 /** Why the engine refused an edit. The UI turns these into messages. */
@@ -89,6 +127,12 @@ public enum class EditRejection {
 
     /** The clip can't go on that track (different kind, or the magnetic main track). */
     INCOMPATIBLE_TRACK,
+
+    /** An overlay edit on a clip that isn't an overlay, or one that would turn text into a sticker (or back). */
+    NOT_AN_OVERLAY,
+
+    /** A sticker whose media isn't an image, or a text overlay given media. */
+    UNSUPPORTED_MEDIA,
 }
 
 public sealed interface EditResult {
@@ -112,6 +156,11 @@ public sealed interface EditResult {
 public data class MediaBounds(val kind: MediaKind, val durationUs: Long, val hasAudio: Boolean = kind != MediaKind.IMAGE) {
     /** Photos have no source time, so they can be any length. */
     val isStill: Boolean get() = kind == MediaKind.IMAGE
+
+    public companion object {
+        /** Text overlays: no file, no sound, and no source time, like a photo. */
+        public val TEXT: MediaBounds = MediaBounds(MediaKind.IMAGE, durationUs = 0, hasAudio = false)
+    }
 }
 
 /**

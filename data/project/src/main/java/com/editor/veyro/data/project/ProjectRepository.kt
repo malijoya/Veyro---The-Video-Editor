@@ -28,13 +28,17 @@ public interface ProjectRepository {
 
     /**
      * Appends [media] to the project, skipping items whose source URI is
-     * already in it. If the project has an edited timeline, the new media is
-     * added to the end of its tracks too. Returns the number added, or `null`
-     * if the project no longer exists.
+     * already in it. Returns the number added, or `null` if the project no
+     * longer exists.
+     *
+     * With [arrange] (imports), the new media is also added to the end of an
+     * edited timeline's tracks. Without it (an image picked as a sticker),
+     * the media only joins the project's media, and the timeline stays as it
+     * is shown now.
      *
      * @throws IllegalArgumentException if a media URI points at a temporary location.
      */
-    public suspend fun addMedia(id: ProjectId, media: List<MediaRef>): Int?
+    public suspend fun addMedia(id: ProjectId, media: List<MediaRef>, arrange: Boolean = true): Int?
 
     /**
      * Saves an edited timeline. Returns false if the project no longer exists.

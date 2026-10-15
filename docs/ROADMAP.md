@@ -257,10 +257,51 @@ Original scope:
 - **Still open:** keyframe editing UI, voiceover recording, volume boost
   with a limiter, ducking.
 
+## M7 — Text and overlays (code complete 2026-10-15, awaiting build and device run)
+- **Done:**
+  - Model: `Overlay` (text with font, bold, italic, size, color, alignment,
+    outline, shadow, background box; or an image sticker) plus placement
+    (position, size, rotation, opacity). Overlay lanes on the timeline,
+    stacked top first. Schema v6.
+  - Editing: add text or sticker, edit, move, resize, rotate, delete,
+    duplicate, bring forward, send backward, to front, to back. Trim, split
+    and move in time work as for any clip. Lanes left empty disappear.
+    Undo covers all of it, including lanes added or removed.
+  - Rendering: one painter for preview, export and the editing canvas.
+    Media3 `OverlayEffect` at composition level, region-sized, straight
+    alpha, redrawn only at layer boundaries.
+  - Fonts: nine system families with family fallback, plus system glyph
+    fallback for other scripts and emoji.
+  - Editor: on-preview drag, pinch, twist and a resize/rotate handle, with
+    centre and right-angle snapping; a tabbed text and style panel; a
+    sticker sheet (project images or the photo picker); overlay lanes on
+    the timeline.
+- **Tests:**
+  - JVM: model validation, colors, geometry (clockwise rotation, hit
+    testing); stacking on add, every layer move, lane pruning, overlay
+    trims, moves and splits, and undo/redo of a full sequence; render plan
+    order, cuts, skips, missing stickers; schema v6 round trip, lenient
+    decoding, v5 compatibility, stickers kept off the timeline; ViewModel
+    (text at the playhead, drafts as one undo step, the selected overlay
+    left out of the player's plan, sticker import, layer messages).
+  - Instrumented (`OverlayRenderingInstrumentedTest`): family fallback,
+    glyph fallback for CJK, Arabic, Devanagari and emoji in every font,
+    position and size against the measured box, resolution independence,
+    rotation, whole-overlay opacity, straight alpha, and redraws only at
+    boundaries.
+  - Instrumented (`OverlayExportInstrumentedTest`): an exported MP4 decoded
+    back: title position and size, title only within its time range, a
+    half-transparent sticker blended over the video and its transparent
+    half untouched, and CJK/emoji glyphs drawn.
+  - The preview engine plays a timeline with text and a sticker to the end.
+  - All of these need a build and a device run.
+- **Still open:** animation and keyframes for overlays, custom font import,
+  text templates, animated stickers, picture-in-picture video overlays.
+
 ## M7+ — Creative features
 Each item follows the model → evaluator → playback and export pattern:
 - Speed ramps.
-- Text and stickers with keyframes.
+- Keyframes and animation for text and stickers.
 - Transitions.
 - Color and LUT filters (OpenGL ES `GlEffect`).
 - Audio mixing, volume keyframes and fades.

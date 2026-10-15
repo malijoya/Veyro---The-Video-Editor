@@ -372,7 +372,7 @@ class TimelineEditorTest {
             t.tracks.flatMap { it.clips }.forEach { clip ->
                 assertTrue(clip.durationUs > 0)
                 assertTrue(clip.startUs >= 0)
-                val bounds = media.getValue(clip.mediaId)
+                val bounds = media.getValue(clip.mediaId!!)
                 if (!bounds.isStill) {
                     assertTrue("$clip in", clip.sourceInUs >= 0)
                     assertTrue("$clip out", clip.sourceOutUs <= bounds.durationUs)

@@ -67,7 +67,7 @@ class ExportViewModelTest {
         override val summaries: Flow<List<ProjectSummary>> = saved.map { all -> all.map(ProjectSummary::of) }
         override fun project(id: ProjectId) = saved.map { all -> all.firstOrNull { it.id == id } }
         override suspend fun create(name: String, media: List<MediaRef>, settings: ProjectSettings?) = error("unused")
-        override suspend fun addMedia(id: ProjectId, media: List<MediaRef>): Int? = error("unused")
+        override suspend fun addMedia(id: ProjectId, media: List<MediaRef>, arrange: Boolean): Int? = error("unused")
         override suspend fun updateTimeline(id: ProjectId, timeline: Timeline): Boolean = error("unused")
         override suspend fun updateSettings(id: ProjectId, settings: ProjectSettings): Boolean = error("unused")
         override suspend fun importProject(project: Project): Project = error("unused")

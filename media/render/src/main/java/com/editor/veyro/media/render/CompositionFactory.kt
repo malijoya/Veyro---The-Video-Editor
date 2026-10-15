@@ -1,5 +1,6 @@
 package com.editor.veyro.media.render
 
+import android.content.Context
 import android.os.Build
 import androidx.annotation.OptIn
 import androidx.media3.common.C
@@ -10,6 +11,7 @@ import androidx.media3.common.audio.ChannelMixingMatrix
 import androidx.media3.common.audio.GainProcessor
 import androidx.media3.common.audio.ToInt16PcmAudioProcessor
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.effect.OverlayEffect
 import androidx.media3.effect.Presentation
 import androidx.media3.transformer.Composition
 import androidx.media3.transformer.EditedMediaItem
@@ -20,6 +22,8 @@ import com.editor.veyro.core.timeline.export.AudioSegment
 import com.editor.veyro.core.timeline.export.ExportPlan
 import com.editor.veyro.core.timeline.export.SegmentGain
 import com.editor.veyro.core.timeline.export.VideoSegment
+import com.editor.veyro.media.render.overlay.StickerImages
+import com.editor.veyro.media.render.overlay.TimelineOverlay
 
 /**
  * Translates an [ExportPlan] into a Media3 [Composition], for both export
@@ -41,6 +45,9 @@ import com.editor.veyro.core.timeline.export.VideoSegment
  *   preview and export, including after seeks. Items at unity gain skip it.
  * - A composition-wide [Presentation] scales and letterboxes everything to
  *   the chosen size.
+ * - Text and stickers ([ExportPlan.overlays]) are drawn after it, by one
+ *   composition-wide [OverlayEffect] ([TimelineOverlay]), so they sit on the
+ *   output canvas, in timeline time, over photos and videos alike.
  *
  * Every item has its source duration set: CompositionPlayer requires it.
  */
@@ -48,16 +55,23 @@ import com.editor.veyro.core.timeline.export.VideoSegment
 public object CompositionFactory {
 
     /** The composition Transformer exports. HDR sources are tone-mapped to SDR on Android 10+. */
-    public fun forExport(plan: ExportPlan): Composition = build(plan, toneMapHdr = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)
+    public fun forExport(plan: ExportPlan, context: Context): Composition =
+        build(plan, context, toneMapHdr = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)
 
     /**
-     * The composition the editor preview plays. Same sequences, items and
-     * gains as [forExport]. HDR tone-mapping is left to the display, because
-     * CompositionPlayer doesn't support every tone-mapping mode.
+     * The composition the editor preview plays. Same sequences, items, gains
+     * and overlays as [forExport].
+     *
+     * HDR tone-mapping is normally left to the display, but with overlays
+     * the preview tone-maps with OpenGL, as export does: Media3 can only
+     * blend plain bitmaps onto SDR frames (HDR needs Android 14 gain-map
+     * images). CompositionPlayer supports the OpenGL mode; it lacks only the
+     * MediaCodec one.
      */
-    public fun forPreview(plan: ExportPlan): Composition = build(plan, toneMapHdr = false)
+    public fun forPreview(plan: ExportPlan, context: Context): Composition =
+        build(plan, context, toneMapHdr = plan.overlays.isNotEmpty() && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)
 
-    private fun build(plan: ExportPlan, toneMapHdr: Boolean): Composition {
+    private fun build(plan: ExportPlan, context: Context, toneMapHdr: Boolean): Composition {
         val sequences = mutableListOf<EditedMediaItemSequence>()
         if (plan.video.isNotEmpty()) {
             val fps = plan.settings.outputFps
@@ -80,7 +94,13 @@ public object CompositionFactory {
         val builder = Composition.Builder(sequences)
         if (plan.video.isNotEmpty()) {
             val presentation = Presentation.createForWidthAndHeight(plan.settings.widthPx, plan.settings.heightPx, Presentation.LAYOUT_SCALE_TO_FIT)
-            builder.setEffects(Effects(emptyList(), listOf(presentation)))
+            val overlays = if (plan.overlays.isEmpty()) {
+                emptyList()
+            } else {
+                // A new overlay per composition: it keeps the current frame's bitmap and GL texture.
+                listOf(OverlayEffect(listOf(TimelineOverlay(plan.overlays, plan.settings.widthPx, plan.settings.heightPx, StickerImages(context)))))
+            }
+            builder.setEffects(Effects(emptyList(), listOf(presentation) + overlays))
         }
         if (toneMapHdr) builder.setHdrMode(Composition.HDR_MODE_TONE_MAP_HDR_TO_SDR_USING_OPEN_GL)
         return builder.build()

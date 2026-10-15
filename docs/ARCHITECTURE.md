@@ -53,7 +53,7 @@ decision changes.
 | `:media:playback` | Android + Compose | exists | `PreviewPlan` (one asset, or a whole timeline's render plan), `PreviewController` (lifecycle, timing, errors), `PlaybackEngine` with `ExoPlaybackEngine` (single assets) and `CompositionPlaybackEngine` (the editor's timeline, every track mixed), preview composables. Holds the preview UI widgets because they bind directly to the Media3 `Player`. |
 | `:media:export` | Android | exists | `ExportPipeline` (render → verify → publish, the only path to a completed export), `CompositionFactory` (plan → Media3 `Composition`), `Media3VideoRenderer` (Transformer, real progress, cancel), `AndroidOutputVerifier` (MediaExtractor + frame decode), `AndroidExportPublisher` (MediaStore or SAF document). |
 | `:feature:export` | Android + Compose | exists | Export screen: size and frame-rate choice, destination, progress, cancel, completion and failure states. |
-| `:media:render` | Android | exists | `CompositionFactory`: the one translation of a render plan into a Media3 `Composition`, used by preview (`CompositionPlayer`) and export (Transformer). Per-item gain through Media3 `GainProcessor`. GL effects and transitions will live here too (M7+). |
+| `:media:render` | Android | exists | `CompositionFactory`: the one translation of a render plan into a Media3 `Composition`, used by preview (`CompositionPlayer`) and export (Transformer). Per-item gain through Media3 `GainProcessor`. Overlays: `OverlayPainter` (the one drawing routine for text and stickers), `FontResolver` (family and glyph fallback), `StickerImages`, and `TimelineOverlay` (a Media3 `BitmapOverlay`). GL effects and transitions will live here too (M7+). |
 | `:feature:editor` | Android + Compose | exists | Editor screen: preview, timeline UI (ruler, tracks, filmstrips, playhead, zoom), selection, playhead/player sync. |
 
 Modules are created in the milestone that first gives them real code, never
@@ -502,6 +502,84 @@ Checked against the Media3 1.11.1 sources before implementation:
   - If a file loses its stream after import, Media3 generates silence for it
     (the sequence declares an audio track), and export still completes.
 
+## Text and overlays (M7)
+
+```
+Clip.overlay (core:model) ─► ExportPlanner ─► ExportPlan.overlays (OverlayLayer, bottom first)
+                                                 │
+            CompositionFactory: Presentation ─► OverlayEffect(TimelineOverlay)   (preview and export)
+                                                 │
+                         TimelineOverlay ─► OverlayPainter ◄─ OverlayCanvas (editor, the overlay being edited)
+```
+
+- **Model (`core:model/overlay`).** An `Overlay` is content (`Text` with a
+  `TextStyle`, or `Sticker`) plus an `OverlayTransform` (centre as fractions
+  of the canvas, scale, clockwise rotation, opacity). Font size is a
+  fraction of the canvas's shorter side; outline, shadow and background are
+  fractions of the font size. So a project looks the same at every output
+  size, and the 720p preview matches a 4K export. Colors are `Argb`, stored
+  as `#AARRGGBB`; fonts are portable keys (`OverlayFont`).
+- **Timeline.** Overlays are clips on `TrackKind.OVERLAY` lanes, so trim,
+  split, move, delete, snapping and undo work on them unchanged. Text clips
+  have no media (`Clip.mediaId` is null); a sticker's media is a project
+  image. Lanes are listed above the main track and the first is drawn on
+  top; overlays on one lane never overlap in time, so the lane order is the
+  whole stacking order.
+- **Edits.** `AddOverlay` puts a new overlay above everything it overlaps,
+  reusing a lane with room or inserting one. `ArrangeLayer` (forward,
+  backward, to front, to back) considers only overlays that overlap in
+  time. `SetOverlay` changes content and placement (text stays text). Lanes
+  left empty are removed. `TimelinePatch` now records track-list changes
+  (`TrackLayout` with clip-less track shells), so adding, removing and
+  restacking lanes undo exactly.
+- **One painter.** `OverlayPainter` draws an overlay on an Android `Canvas`
+  in canvas pixels: background box, shadow, outline, fill, then opacity for
+  the whole overlay through one layer. Text uses `StaticLayout` with linear
+  advances, so line breaks don't depend on resolution. Lines wrap at 90% of
+  the canvas width before scaling.
+- **Preview and export.** `CompositionFactory` adds one composition-wide
+  `OverlayEffect` after the `Presentation`, holding a `TimelineOverlay`.
+  Checked in the Media3 1.11.1 sources: composition effects see composition
+  time in both Transformer (each item's frames are offset by the length of
+  the items before it) and CompositionPlayer (buffer times adjusted to
+  composition time). So a layer shows on exactly the frames in its range.
+  For each set of active layers it draws only the region they touch and
+  places it pixel for pixel (scale 1, anchored at the region's centre). The
+  set changes only at layer boundaries, so the uploaded texture is reused in
+  between.
+- **Transparency.** Android draws premultiplied alpha; Media3's overlay
+  shader blends straight alpha (`overlay.rgb * a + video.rgb * (1 - a)`).
+  The region is converted to straight alpha before upload, so translucent
+  text, soft shadows and PNG sticker edges blend correctly. Stickers keep
+  their alpha channel (decoded as ARGB_8888, turned upright by their EXIF
+  rotation).
+- **Fonts.** Nine families every Android device has shipped since Android 5
+  (Roboto variants, Noto Serif, Droid Sans Mono, Dancing Script, Coming Soon,
+  Carrois Gothic SC). `FontResolver` detects a missing family (Android
+  silently returns the default typeface for unknown names) and uses the
+  font's generic fallback (sans, serif or monospace) instead. Characters a
+  font lacks (emoji, CJK, Arabic, Devanagari) come from the system fallback
+  fonts, per character, in preview and export alike.
+- **Editing on screen.** The player renders every overlay except the
+  selected one. `OverlayCanvas` draws that one with the same painter, scaled
+  from canvas pixels to the screen, plus its frame and handle. A drag,
+  pinch or twist updates it on the next frame without reloading the player.
+  Changes in progress are drafts in the ViewModel and are saved as one undo
+  step when the gesture ends (or the slider is released). Moves snap to the
+  canvas's centre lines and rotation to right angles.
+- **Panel.** Tabs for Text, Font (family, bold, italic, alignment, size),
+  Color, Outline, Shadow, Background, Adjust (opacity, size, rotation,
+  centre, straighten) and Layer (forward, backward, front, back, duplicate,
+  delete). Everything the gestures do can also be done there, which keeps it
+  accessible.
+- **Stickers.** Picked from the project's images or from the photo picker.
+  A picked image joins the project's media with lasting read access
+  (`addMedia(arrange = false)`), but not the main track. An unedited
+  project first stores its default arrangement, so the new image can't be
+  arranged into it later. A missing sticker image blocks export, like any
+  missing file; during rendering, an unreadable one fails the export
+  instead of being left out.
+
 ## Export (M6)
 
 ```
@@ -567,20 +645,26 @@ Checked against the Media3 1.11.1 sources and the Transformer guides
 | Exact NTSC frame rates (29.97, 23.976, 59.94) | Written as 30, 24 and 60. | `EditedMediaItem.Builder.setFrameRate` takes an `int`. |
 | Raising a video's frame rate | A 24 fps clip stays 24 fps in a 30 fps export. | For video, `setFrameRate` is a maximum: frames are dropped, never duplicated. |
 | Clip effects | Saved but not rendered; the export screen warns. | The effects milestone (M7) adds shared `GlEffect`s. |
-| Overlay video tracks | Ignored, with a warning. | Only the main video track is rendered. Every audio track is mixed. |
+| Extra video tracks (picture-in-picture) | Ignored, with a warning. | Only the main video track is rendered. Text and stickers are, and every audio track is mixed. |
+| Custom fonts (importing a font file) | Not available; nine built-in families. | Fonts would need to be copied into the project and travel with project files. |
+| Animated text, overlay keyframes, text templates | Not available. An overlay is static for its whole range. | The model has room for keyframes (as audio gain has); the editor and renderer don't animate yet. |
+| Animated stickers (GIF, animated WebP) | First frame only. | `StickerImages` decodes a still. |
+| Vertical text, per-character styling, letter and line spacing | Not available. | One style per text overlay. |
+| More than 15 SDR overlays at the same moment | Fine: all visible overlays are drawn into one Media3 overlay texture. | Media3's limit is per `TextureOverlay`, and Veyro uses one. |
+| HDR footage with overlays in the preview | Tone-mapped to SDR in the preview (as export does). | Media3 blends plain bitmaps onto SDR frames only. |
 | Volume above 100% | Not offered. | Avoids clipping a single source; a boost would need a limiter that runs before Media3's 16-bit mixer. |
 | Editing gain keyframes | Stored, rendered and carried through edits, but no UI yet. | Planned with the keyframe editor (M7). |
 | Recording a voiceover | Not available; import an audio file and move it to the Voiceover track. | Needs microphone capture (and its permission). |
 | Ducking, EQ, noise reduction, audio effects | Not available. | Not in the model yet. |
 | Audio-only projects | Blocked. | Output must have a video track. |
 | Transitions, crossfades | Not available. | No transition model yet; Media3 Compositions don't support crossfading video or audio tracks. |
-| Speed changes, keyframes, text, stickers | Not available. | Not in the timeline model yet. |
+| Speed changes, keyframes | Not available. | Not in the timeline model yet. |
 | Bitrate and codec choice (HEVC, AV1), HDR output | Not offered. H.264/AAC, encoder's default bitrate, SDR. | Picked for compatibility; Transformer may still fall back on devices that can't encode H.264 at the chosen size, and the completion screen shows the size actually written. |
 | More than 6 audio channels | Fails with a processing error. | Media3's default stereo down-mix covers 1–6 input channels. |
 | Clips over GIF or other multi-frame images | First frame only. | `DefaultAssetLoaderFactory` behaviour. |
 | Changed source files (`MediaHealth.CHANGED`) | Exported as stored. Clips past the new end block the export. | Clip timing can't be re-verified against a replaced file. |
 | Headphones unplugged during editor preview | Playback continues. | `CompositionPlayer` has no "becoming noisy" option, unlike ExoPlayer. |
-| HDR in the editor preview | Shown as decoded, without tone-mapping. Export tone-maps to SDR. | CompositionPlayer doesn't support every tone-mapping mode. |
+| HDR in the editor preview | Shown as decoded, without tone-mapping, unless the timeline has text or stickers. Export tone-maps to SDR. | CompositionPlayer supports OpenGL tone-mapping but not the MediaCodec mode; it is only switched on when overlays need SDR frames. |
 
 ## Platform concerns (owned by the media and data modules)
 

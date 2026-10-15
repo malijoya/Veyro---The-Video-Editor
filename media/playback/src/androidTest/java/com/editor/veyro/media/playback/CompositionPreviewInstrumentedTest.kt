@@ -6,11 +6,15 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.editor.veyro.core.model.audio.ClipAudio
 import com.editor.veyro.core.model.audio.GainEnvelope
+import com.editor.veyro.core.model.overlay.Overlay
+import com.editor.veyro.core.model.overlay.OverlayContent
+import com.editor.veyro.core.model.overlay.OverlayTransform
 import com.editor.veyro.core.model.project.MediaKind
 import com.editor.veyro.core.model.time.FrameRate
 import com.editor.veyro.core.timeline.export.AudioSegment
 import com.editor.veyro.core.timeline.export.ExportPlan
 import com.editor.veyro.core.timeline.export.ExportSettings
+import com.editor.veyro.core.timeline.export.OverlayLayer
 import com.editor.veyro.core.timeline.export.SegmentGain
 import com.editor.veyro.core.timeline.export.VideoSegment
 import java.io.File
@@ -26,8 +30,9 @@ import org.junit.runner.RunWith
 
 /**
  * The editor preview path on a real device: [CompositionPlaybackEngine]
- * plays a whole timeline (video, a photo, and music with a fade on its own
- * track) through [PreviewController], to the end, without errors.
+ * plays a whole timeline (video, a photo, music with a fade on its own
+ * track, and text and a sticker over the picture) through
+ * [PreviewController], to the end, without errors.
  */
 @RunWith(AndroidJUnit4::class)
 class CompositionPreviewInstrumentedTest {
@@ -74,6 +79,11 @@ class CompositionPreviewInstrumentedTest {
                         gain = SegmentGain(GainEnvelope(2_000_000, 0, ClipAudio(volume = 0.6f, fadeInUs = 500_000)), timelineStartUs = 500_000),
                     ),
                 ),
+            ),
+            // Across the video-to-photo cut, so the overlay runs over both kinds of item.
+            overlays = listOf(
+                OverlayLayer("sticker", 0, 2_500_000, Overlay(OverlayContent.Sticker, OverlayTransform(opacity = 0.5f)), imageUri = Uri.fromFile(photo).toString(), imageWidthPx = 320, imageHeightPx = 240),
+                OverlayLayer("title", 1_000_000, 2_000_000, Overlay(OverlayContent.Text("Preview 漢字 😀"), OverlayTransform(centerY = 0.8f, rotationDegrees = -15f))),
             ),
         )
         instrumentation.runOnMainSync {

@@ -72,7 +72,7 @@ class MediaImportViewModelTest {
             saved.value = saved.value + project
             return project
         }
-        override suspend fun addMedia(id: ProjectId, media: List<MediaRef>): Int? {
+        override suspend fun addMedia(id: ProjectId, media: List<MediaRef>, arrange: Boolean): Int? {
             failIfRequested()
             val project = saved.value.firstOrNull { it.id == id } ?: return null
             val fresh = media.filterNot { project.containsUri(it.uri) }

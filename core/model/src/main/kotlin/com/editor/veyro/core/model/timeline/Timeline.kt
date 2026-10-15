@@ -3,6 +3,8 @@ package com.editor.veyro.core.model.timeline
 import com.editor.veyro.core.model.audio.AudioRole
 import com.editor.veyro.core.model.audio.ClipAudio
 import com.editor.veyro.core.model.audio.TrackAudio
+import com.editor.veyro.core.model.overlay.Overlay
+import com.editor.veyro.core.model.overlay.OverlayContent
 import com.editor.veyro.core.model.project.MediaId
 import com.editor.veyro.core.model.time.FrameRate
 
@@ -28,6 +30,16 @@ public enum class TrackKind {
 
     /** Sound only: music, voice-over, effects. */
     AUDIO,
+
+    /**
+     * Text and stickers drawn over the picture. Every clip carries an
+     * [Overlay]. Overlay tracks keep gaps, like audio tracks.
+     *
+     * Stacking: overlay tracks are listed above the main track, and the one
+     * listed first is drawn on top. Overlays on the same track never overlap
+     * in time, so the track order is the whole stacking order.
+     */
+    OVERLAY,
 }
 
 /**
@@ -39,11 +51,15 @@ public enum class TrackKind {
  *
  * At normal speed, which is all there is so far, both ranges have length
  * [durationUs]. Photos have no source time: [sourceInUs] is always 0, and
- * [durationUs] is how long the photo stays on screen.
+ * [durationUs] is how long the photo stays on screen. Text and stickers
+ * behave like photos.
+ *
+ * [mediaId] is the source file. Only text overlays have none: their content
+ * is the text itself.
  */
 public data class Clip(
     val id: ClipId,
-    val mediaId: MediaId,
+    val mediaId: MediaId?,
     val startUs: Long,
     val sourceInUs: Long,
     val durationUs: Long,
@@ -51,8 +67,13 @@ public data class Clip(
     val effects: List<ClipEffect> = emptyList(),
     /** Volume, mute and fades for the clip's sound. Ignored for photos, and for videos without an audio stream. */
     val audio: ClipAudio = ClipAudio.DEFAULT,
+    /** The text or sticker this clip shows, on overlay tracks. Null on every other track. */
+    val overlay: Overlay? = null,
 ) {
     init {
+        require((mediaId == null) == (overlay?.content is OverlayContent.Text)) {
+            "Clip ${id.value}: text overlays have no media, and every other clip needs media"
+        }
         require(startUs >= 0) { "startUs must not be negative" }
         require(sourceInUs >= 0) { "sourceInUs must not be negative" }
         require(durationUs > 0) { "durationUs must be positive" }
@@ -105,6 +126,10 @@ public data class Track(
         clips.zipWithNext().forEach { (a, b) ->
             require(a.endUs <= b.startUs) { "Clips ${a.id.value} and ${b.id.value} overlap or are out of order" }
         }
+        // Overlay tracks hold only overlays, and overlays live only there.
+        clips.forEach { clip ->
+            require((clip.overlay != null) == (kind == TrackKind.OVERLAY)) { "Clip ${clip.id.value} doesn't belong on a ${kind.name} track" }
+        }
     }
 
     val endUs: Long get() = clips.lastOrNull()?.endUs ?: 0
@@ -119,6 +144,9 @@ public data class Track(
  * The first [TrackKind.VIDEO] track is the main track, and it is
  * *magnetic*: its clips always sit back to back from 0, so moves become
  * reorders and trims or deletes close the gap. Other tracks keep their gaps.
+ *
+ * [TrackKind.OVERLAY] tracks are drawn over the picture, the first listed on
+ * top (see [overlayTracks]).
  *
  * [frameRate] is the edit's frame grid. Snapping and the minimum clip
  * length use it.
@@ -136,6 +164,9 @@ public data class Timeline(
     val durationUs: Long get() = tracks.maxOfOrNull { it.endUs } ?: 0
 
     val mainTrack: Track? get() = tracks.firstOrNull { it.kind == TrackKind.VIDEO }
+
+    /** Overlay tracks, top layer first. */
+    val overlayTracks: List<Track> get() = tracks.filter { it.kind == TrackKind.OVERLAY }
 
     /** No clip may be shorter than one frame of [frameRate]. */
     val minClipDurationUs: Long get() = frameRate.frameToUs(1)

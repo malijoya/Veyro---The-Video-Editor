@@ -1,5 +1,7 @@
 package com.editor.veyro.core.timeline.export
 
+import com.editor.veyro.core.model.overlay.Overlay
+import com.editor.veyro.core.model.overlay.OverlayContent
 import com.editor.veyro.core.model.project.MediaKind
 import com.editor.veyro.core.model.time.FrameRate
 import kotlin.math.roundToLong
@@ -99,11 +101,42 @@ public sealed interface AudioSegment {
 }
 
 /**
+ * A text or sticker drawn over the picture during `[startUs, endUs)` of the
+ * output. Layers are listed bottom to top.
+ *
+ * @property clipId the overlay's clip, so the editor can tell layers apart
+ *   (it draws the one being edited itself).
+ * @property imageUri the sticker's image; null for text.
+ * @property imageWidthPx the image's upright width, from the project's
+ *   media info (0 if unknown). Used to lay the sticker out before decoding.
+ * @property imageHeightPx the image's upright height.
+ * @property imageRotationDegrees how far the stored image must turn
+ *   clockwise to be upright (its EXIF orientation).
+ */
+public data class OverlayLayer(
+    val clipId: String,
+    val startUs: Long,
+    val endUs: Long,
+    val overlay: Overlay,
+    val imageUri: String? = null,
+    val imageWidthPx: Int = 0,
+    val imageHeightPx: Int = 0,
+    val imageRotationDegrees: Int = 0,
+) {
+    init {
+        require(startUs >= 0 && endUs > startUs) { "Invalid overlay range" }
+        require((imageUri == null) == (overlay.content is OverlayContent.Text)) { "Stickers need an image, text has none" }
+    }
+
+    public operator fun contains(timeUs: Long): Boolean = timeUs >= startUs && timeUs < endUs
+}
+
+/**
  * Things the export leaves out. The export still runs; the UI lists these
  * before it starts.
  */
 public enum class ExportWarning {
-    /** Video tracks beyond the main track (overlays) aren't exported. */
+    /** Video tracks beyond the main track (picture-in-picture) aren't exported. Text and sticker tracks are. */
     EXTRA_TRACKS_IGNORED,
 
     /** Clip effects are saved in the project but not rendered yet. */
@@ -117,6 +150,9 @@ public enum class ExportWarning {
 
     /** Some audio hasn't been analysed, so its peaks are assumed to be full scale where it overlaps other sound. */
     AUDIO_NOT_ANALYSED,
+
+    /** Text or stickers that run past the end of the picture are cut there (or left out if they start after it). */
+    OVERLAYS_TRIMMED_TO_VIDEO,
 }
 
 /** Why an export can't run at all. */
@@ -142,18 +178,23 @@ public enum class ExportBlocker {
  * @property audioTracks each audible audio track (music, voiceover), from 0
  *   to [durationUs] with gaps as silence. Muted tracks and tracks with
  *   nothing audible are left out.
+ * @property overlays text and stickers over the picture, bottom to top,
+ *   within `[0, durationUs]`. Empty without video.
  */
 public data class ExportPlan(
     val settings: ExportSettings,
     val video: List<VideoSegment>,
     val audioTracks: List<List<AudioSegment>>,
     val warnings: Set<ExportWarning> = emptySet(),
+    val overlays: List<OverlayLayer> = emptyList(),
 ) {
     init {
         require(video.isNotEmpty() || audioTracks.isNotEmpty()) { "A plan needs something to play" }
         require(audioTracks.all { it.isNotEmpty() && it.any { s -> s is AudioSegment.Clip } }) { "Audio tracks must contain sound" }
         val length = video.sumOf { it.durationUs }.takeIf { video.isNotEmpty() } ?: audioTracks.first().sumOf { it.durationUs }
         require(audioTracks.all { it.sumOf { s -> s.durationUs } == length }) { "Every audio track must match the plan's length" }
+        require(overlays.isEmpty() || video.isNotEmpty()) { "Overlays need a picture to draw on" }
+        require(overlays.all { it.endUs <= length }) { "Overlays must end within the plan" }
     }
 
     val durationUs: Long

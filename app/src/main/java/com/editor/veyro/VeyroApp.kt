@@ -191,6 +191,7 @@ fun VeyroApp(container: AppContainer) {
                                 },
                                 autosave = container.autosave,
                                 waveforms = container.waveforms,
+                                images = container.stickerImporter,
                             )
                         },
                         onBack = { backStack.removeLastOrNull() },

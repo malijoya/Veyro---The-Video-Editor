@@ -30,7 +30,7 @@ class ProjectAutosaveTest {
         override val summaries: Flow<List<ProjectSummary>> = emptyFlow()
         override fun project(id: ProjectId): Flow<Project?> = emptyFlow()
         override suspend fun create(name: String, media: List<MediaRef>, settings: ProjectSettings?) = error("unused")
-        override suspend fun addMedia(id: ProjectId, media: List<MediaRef>): Int? = error("unused")
+        override suspend fun addMedia(id: ProjectId, media: List<MediaRef>, arrange: Boolean): Int? = error("unused")
         override suspend fun updateTimeline(id: ProjectId, timeline: Timeline): Boolean {
             if (failWrites) throw IOException("disk full")
             writes += id to timeline

@@ -233,10 +233,21 @@ class EditHistoryTest {
     }
 
     @Test
-    fun `edits that change the track list are rejected when recording`() {
+    fun `edits that change the track list are recorded and undone exactly`() {
         val t = timeline()
         val fewerTracks = t.copy(tracks = t.tracks.take(1))
-        assertThrows(IllegalArgumentException::class.java) { EditHistory().record(EditCommand.CloseGaps(audio), t, fewerTracks) }
+        val history = EditHistory().record(EditCommand.CloseGaps(audio), t, fewerTracks)
+        val patch = history.past.single().patch
+        assertEquals(t.tracks.map { it.id }, patch.layout!!.before.map { it.id })
+        assertTrue("Shells carry no clips", patch.layout!!.after.all { it.clips.isEmpty() })
+
+        val undone = history.undo(fewerTracks) as HistoryStep.Moved
+        assertEquals(t, undone.timeline)
+        val redone = undone.history.redo(undone.timeline) as HistoryStep.Moved
+        assertEquals(fewerTracks, redone.timeline)
+        // A layout patch only fits the track list it was made from.
+        assertNull(patch.applyTo(fewerTracks))
+        assertThrows(IllegalArgumentException::class.java) { TrackLayout(t.tracks, emptyList()) }
     }
 
     // ---------------- Memory ----------------
