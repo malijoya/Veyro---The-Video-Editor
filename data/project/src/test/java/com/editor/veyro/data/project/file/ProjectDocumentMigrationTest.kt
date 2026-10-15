@@ -60,7 +60,7 @@ class ProjectDocumentMigrationTest {
 
         repo.rename(ProjectId("p1"), "Renamed")
         val text = File(tmp.root, "p1/project.json").readText()
-        assertTrue(text.contains("\"schemaVersion\":3"))
+        assertTrue(text.contains("\"schemaVersion\":4"))
         assertEquals("Renamed", (ProjectDocumentCodec.decode(text) as DecodeResult.Ok).project.name)
     }
 
@@ -93,6 +93,19 @@ class ProjectDocumentMigrationTest {
         val json = ProjectDocumentCodec.encode(project)
         assertTrue(json.contains("\"kind\":\"audio\""))
         assertEquals(DecodeResult.Ok(project), ProjectDocumentCodec.decode(json))
+    }
+
+    @Test
+    fun `v4 files written before the snap distance setting read with the default`() {
+        val project = Project(ProjectId("p"), "Snap", 1, 2, emptyList())
+        val json = ProjectDocumentCodec.encode(project)
+        assertTrue(json.contains("\"snapDistanceDp\":12"))
+        val withoutField = json.replace(",\"snapDistanceDp\":12", "").replace("\"snapDistanceDp\":12,", "")
+        val decoded = (ProjectDocumentCodec.decode(withoutField) as DecodeResult.Ok).project
+        assertEquals(com.editor.veyro.core.model.project.ProjectSettings.DEFAULT_SNAP_DISTANCE_DP, decoded.settings.snapDistanceDp)
+        // An out-of-range value (a hand-edited file) also falls back instead of failing the load.
+        val outOfRange = json.replace("\"snapDistanceDp\":12", "\"snapDistanceDp\":999")
+        assertEquals(12, (ProjectDocumentCodec.decode(outOfRange) as DecodeResult.Ok).project.settings.snapDistanceDp)
     }
 
     @Test

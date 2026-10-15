@@ -494,6 +494,7 @@ private val ImportFailure.messageRes: Int
         ImportFailure.UNSUPPORTED_TYPE -> R.string.project_failure_unsupported
         ImportFailure.NOT_ACCESSIBLE -> R.string.project_failure_not_accessible
         ImportFailure.UNREADABLE -> R.string.project_failure_unreadable
+        ImportFailure.TEMPORARY_LOCATION -> R.string.project_failure_temporary
     }
 
 private fun LazyGridScope.fullWidth(key: String, content: @Composable () -> Unit) {

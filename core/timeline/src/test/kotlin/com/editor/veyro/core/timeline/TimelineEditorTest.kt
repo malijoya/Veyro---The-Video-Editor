@@ -323,6 +323,19 @@ class TimelineEditorTest {
         assertEquals(EditResult.Rejected(EditRejection.MEDIA_NOT_FOUND), result)
     }
 
+    @Test
+    fun `effects travel with clips through trim, split and move`() {
+        val effect = com.editor.veyro.core.model.timeline.ClipEffect("fx1", "color.brightness", params = mapOf("amount" to 0.2))
+        val base = timeline().let { t -> t.withTrack(t.track(main)!!.let { tr -> tr.copy(clips = tr.clips.map { if (it.id.value == "A") it.copy(effects = listOf(effect)) else it }) }) }
+        val split = apply(base, EditCommand.Split(ClipId("A"), 3 * sec))
+        assertEquals(listOf(effect), split.clip("A").effects)
+        assertEquals(listOf(effect), split.clip("new-0").effects)
+        val trimmed = apply(split, EditCommand.TrimStart(ClipId("new-0"), 3_500_000))
+        assertEquals(listOf(effect), trimmed.clip("new-0").effects)
+        val moved = apply(trimmed, EditCommand.Move(ClipId("A"), 30 * sec))
+        assertEquals(listOf(effect), moved.clip("A").effects)
+    }
+
     // ---------------- Duration calculations ----------------
 
     @Test

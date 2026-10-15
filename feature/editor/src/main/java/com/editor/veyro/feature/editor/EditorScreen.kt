@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
@@ -50,10 +51,14 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.editor.veyro.core.designsystem.component.AvailabilityBadge
 import com.editor.veyro.core.designsystem.component.EmptyState
@@ -87,6 +92,8 @@ public fun EditorRoute(viewModel: EditorViewModel, onBack: () -> Unit) {
     val player by viewModel.controller.player.collectAsStateWithLifecycle()
     val viewport = rememberTimelineViewportState()
     BindPreviewLifecycle(viewModel.controller)
+    // Write pending edits as soon as the editor leaves the screen (home button, app switch, incoming call).
+    LifecycleEventEffect(Lifecycle.Event.ON_STOP) { viewModel.flush() }
     PlayheadSync(viewModel.controller, viewport, (uiState as? EditorUiState.Ready)?.durationUs ?: 0)
 
     val density = LocalDensity.current
@@ -111,8 +118,7 @@ public fun EditorRoute(viewModel: EditorViewModel, onBack: () -> Unit) {
             },
             onDragUpdate = { deltaUs ->
                 // Snap distance is fixed on screen, so it covers less time when zoomed in.
-                val thresholdUs = viewport.scale.pxToUs(with(density) { SNAP_DISTANCE.toPx() })
-                viewModel.updateDrag(deltaUs, thresholdUs, viewport.playheadUs)
+                viewModel.updateDrag(deltaUs, viewport.scale.pxPerSecond, density.density, viewport.playheadUs)
             },
             onDragEnd = viewModel::endDrag,
             onDragCancel = viewModel::cancelDrag,
@@ -126,9 +132,6 @@ public fun EditorRoute(viewModel: EditorViewModel, onBack: () -> Unit) {
         ),
     )
 }
-
-/** On-screen distance within which a dragged edge snaps to another edge or the playhead. */
-private val SNAP_DISTANCE = 12.dp
 
 /** Editing intents from the screen. Each maps to one ViewModel call. No editing logic lives in the UI. */
 internal class EditActions(
@@ -194,7 +197,12 @@ internal fun EditorScreen(
         snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
-                title = { Text(ready?.projectName.orEmpty(), maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                title = {
+                    Column {
+                        Text(ready?.projectName.orEmpty(), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        ready?.let { SaveStatusLabel(it.saveStatus) }
+                    }
+                },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.editor_back))
@@ -244,7 +252,7 @@ private fun EditorMessageEffect(message: EditorMessage?, snackbarHostState: Snac
         EditorMessage.NOTHING_TO_SPLIT -> stringResource(R.string.editor_msg_nothing_to_split)
         EditorMessage.SPLIT_TOO_CLOSE -> stringResource(R.string.editor_msg_split_too_close)
         EditorMessage.NO_GAPS -> stringResource(R.string.editor_msg_no_gaps)
-        EditorMessage.SAVE_FAILED -> stringResource(R.string.editor_msg_save_failed)
+        EditorMessage.HISTORY_OUT_OF_DATE -> stringResource(R.string.editor_msg_history_out_of_date)
         null -> null
     }
     LaunchedEffect(message) {
@@ -289,7 +297,15 @@ private fun EditorContent(
                 .fillMaxWidth()
                 .background(Color.Black),
         ) {
-            PreviewStage(state, playback, viewport, surface)
+            // The project's canvas, letterboxed in the available space. Media is fitted inside it.
+            Box(
+                contentAlignment = Alignment.Center,
+                modifier = Modifier
+                    .aspectRatio(state.canvasAspectRatio, matchHeightConstraintsFirst = state.canvasAspectRatio < 1f)
+                    .background(Color.Black),
+            ) {
+                PreviewStage(state, playback, viewport, surface)
+            }
         }
         TransportRow(state, playback, viewport, onPlayPause)
         if (state.tracks.all { it.clips.isEmpty() }) {
@@ -319,6 +335,22 @@ private fun EditorContent(
         EditToolbar(state, editActions)
         SelectionBar(state, compact, onClearSelection = { onSelectClip(null) }, onJumpTo = onJumpTo)
     }
+}
+
+/** "Saved", "Saving…" or a failure, so users know their edits are safe. Announced politely as it changes. */
+@Composable
+private fun SaveStatusLabel(status: SaveStatus) {
+    val (text, color) = when (status) {
+        SaveStatus.SAVED -> stringResource(R.string.editor_saved) to MaterialTheme.colorScheme.onSurfaceVariant
+        SaveStatus.PENDING, SaveStatus.SAVING -> stringResource(R.string.editor_saving) to MaterialTheme.colorScheme.onSurfaceVariant
+        SaveStatus.FAILED -> stringResource(R.string.editor_save_failed) to MaterialTheme.colorScheme.error
+    }
+    Text(
+        text,
+        style = MaterialTheme.typography.labelSmall,
+        color = color,
+        modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
+    )
 }
 
 /** The preview: the video surface, with a photo drawn on top while the playhead is on a photo clip. */

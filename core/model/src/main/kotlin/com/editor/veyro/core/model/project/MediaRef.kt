@@ -70,6 +70,13 @@ public data class MediaRef(
     /** Present for [MediaKind.AUDIO], and for [MediaKind.VIDEO] files that have a sound track. */
     val audio: AudioTrackInfo? = null,
     val tags: MediaTags? = null,
+    /**
+     * Whether read access to [uri] was persisted when it was imported. If
+     * false, the provider only granted temporary access, and the file may be
+     * unreadable after a restart. The project screen explains that instead of
+     * calling the file missing.
+     */
+    val accessPersisted: Boolean = true,
 ) {
     init {
         require(durationUs >= 0) { "durationUs must not be negative: $durationUs" }

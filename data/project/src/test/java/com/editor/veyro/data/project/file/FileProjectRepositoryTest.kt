@@ -37,7 +37,7 @@ class FileProjectRepositoryTest {
         mediaAccessReleaser = MediaAccessReleaser { released += it },
         clock = { now },
         newId = { "id-${nextId++}" },
-        onUnreadable = { file, reason -> unreadable += "${file.parentFile?.name}: $reason" },
+        onUnreadable = { id, reason -> unreadable += "$id: $reason" },
     )
 
     private fun media(name: String, kind: MediaKind = MediaKind.VIDEO) = MediaRef(
@@ -142,7 +142,7 @@ class FileProjectRepositoryTest {
             media = listOf(media("a")),
         )
         val json = ProjectDocumentCodec.encode(project)
-        assertTrue(json.contains("\"schemaVersion\":3"))
+        assertTrue(json.contains("\"schemaVersion\":4"))
         assertTrue(json.contains("\"kind\":\"video\""))
         assertEquals(DecodeResult.Ok(project), ProjectDocumentCodec.decode(json))
     }

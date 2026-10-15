@@ -40,6 +40,11 @@
     <string name="library_error_rename">Couldn\'t rename the project</string>
     <string name="library_error_delete">Couldn\'t delete the project</string>
 
+    <string name="library_import_project_file">Open project file</string>
+    <string name="library_import_not_project">That file isn\'t a Veyro project file.</string>
+    <string name="library_import_newer">That project was made by a newer version of Veyro. Update the app to open it.</string>
+    <string name="library_import_damaged">That project file is damaged and can\'t be opened.</string>
+    <string name="library_import_failed">The project file couldn\'t be read.</string>
     <string name="library_sort">Sort projects</string>
     <string name="library_sort_last_edited">Last edited</string>
     <string name="library_sort_created">Date created</string>

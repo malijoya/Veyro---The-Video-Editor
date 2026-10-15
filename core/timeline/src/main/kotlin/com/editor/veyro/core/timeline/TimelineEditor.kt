@@ -97,6 +97,7 @@ public object TimelineEditor {
             // The right part continues the source exactly where the left part stops.
             sourceInUs = if (bounds.isStill) 0 else clip.sourceInUs + leftDuration,
             durationUs = clip.endUs - at,
+            effects = clip.effects, // Both parts keep the clip's effects.
         )
         val clips = track.clips.toMutableList().apply {
             set(index, left)

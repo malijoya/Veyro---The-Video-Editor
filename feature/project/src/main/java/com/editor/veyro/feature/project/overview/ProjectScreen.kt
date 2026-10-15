@@ -51,7 +51,15 @@ import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.Share
+import androidx.compose.material3.DropdownMenuItem
 import androidx.lifecycle.compose.LifecycleResumeEffect
+import com.editor.veyro.core.model.project.ProjectSettings
+import com.editor.veyro.data.project.file.ProjectInterchange
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Warning
@@ -100,6 +108,9 @@ public fun ProjectRoute(
         viewModel.refreshAvailability()
         onPauseOrDispose { }
     }
+    val exportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument(ProjectInterchange.MIME_TYPE),
+    ) { uri -> uri?.let { viewModel.exportTo(it.toString()) } }
     ProjectScreen(
         state = state,
         onBack = onBack,
@@ -108,7 +119,9 @@ public fun ProjectRoute(
         onOpenEditor = onOpenEditor,
         onRename = viewModel::rename,
         onDelete = viewModel::delete,
-        onActionErrorShown = viewModel::actionErrorShown,
+        onUpdateSettings = viewModel::updateSettings,
+        onExport = { exportLauncher.launch(viewModel.exportFileName()) },
+        onMessageShown = viewModel::messageShown,
     )
 }
 
@@ -122,10 +135,14 @@ internal fun ProjectScreen(
     onOpenEditor: () -> Unit,
     onRename: (String) -> Unit,
     onDelete: () -> Unit,
-    onActionErrorShown: () -> Unit,
+    onUpdateSettings: (ProjectSettings) -> Unit,
+    onExport: () -> Unit,
+    onMessageShown: () -> Unit,
 ) {
     val project = (state as? ProjectUiState.Loaded)?.project
     var addMenuOpen by remember { mutableStateOf(false) }
+    var moreMenuOpen by remember { mutableStateOf(false) }
+    var editingSettings by rememberSaveable { mutableStateOf(false) }
     var renaming by rememberSaveable { mutableStateOf(false) }
     var deleting by rememberSaveable { mutableStateOf(false) }
     val snackbarHostState = remember { SnackbarHostState() }
@@ -157,6 +174,23 @@ internal fun ProjectScreen(
                         IconButton(onClick = { deleting = true }) {
                             Icon(Icons.Outlined.Delete, contentDescription = stringResource(R.string.project_delete))
                         }
+                        Box {
+                            IconButton(onClick = { moreMenuOpen = true }) {
+                                Icon(Icons.Filled.MoreVert, contentDescription = stringResource(R.string.project_more))
+                            }
+                            DropdownMenu(expanded = moreMenuOpen, onDismissRequest = { moreMenuOpen = false }) {
+                                DropdownMenuItem(
+                                    text = { Text(stringResource(R.string.project_settings)) },
+                                    leadingIcon = { Icon(Icons.Outlined.Settings, contentDescription = null) },
+                                    onClick = { moreMenuOpen = false; editingSettings = true },
+                                )
+                                DropdownMenuItem(
+                                    text = { Text(stringResource(R.string.project_export_file)) },
+                                    leadingIcon = { Icon(Icons.Outlined.Share, contentDescription = null) },
+                                    onClick = { moreMenuOpen = false; onExport() },
+                                )
+                            }
+                        }
                     }
                 },
             )
@@ -178,7 +212,7 @@ internal fun ProjectScreen(
                     title = stringResource(R.string.project_load_failed_title),
                     message = stringResource(R.string.project_load_failed_message),
                 )
-                is ProjectUiState.Loaded -> ProjectContent(state.project, state.missingUris.orEmpty(), onOpenMedia, onOpenEditor)
+                is ProjectUiState.Loaded -> ProjectContent(state.project, state.missingUris, state.changedUris, onOpenMedia, onOpenEditor)
             }
         }
     }
@@ -212,12 +246,28 @@ internal fun ProjectScreen(
             onDismiss = { deleting = false },
         )
     }
-    val actionFailed = (state as? ProjectUiState.Loaded)?.actionFailed == true
-    val errorText = stringResource(R.string.project_action_failed)
-    LaunchedEffect(actionFailed) {
-        if (actionFailed) {
-            snackbarHostState.showSnackbar(errorText)
-            onActionErrorShown()
+    if (project != null && editingSettings) {
+        ProjectSettingsDialog(
+            current = project.settings,
+            matchingMedia = ProjectSettings.matching(project.media),
+            onConfirm = {
+                editingSettings = false
+                onUpdateSettings(it)
+            },
+            onDismiss = { editingSettings = false },
+        )
+    }
+    val message = (state as? ProjectUiState.Loaded)?.message
+    val messageText = when (message) {
+        ProjectMessage.ACTION_FAILED -> stringResource(R.string.project_action_failed)
+        ProjectMessage.EXPORTED -> stringResource(R.string.project_exported)
+        ProjectMessage.EXPORT_FAILED -> stringResource(R.string.project_export_failed)
+        null -> null
+    }
+    LaunchedEffect(message) {
+        if (messageText != null) {
+            snackbarHostState.showSnackbar(messageText)
+            onMessageShown()
         }
     }
 }
@@ -226,6 +276,7 @@ internal fun ProjectScreen(
 private fun ProjectContent(
     project: Project,
     missingUris: Set<String>,
+    changedUris: Set<String>,
     onOpenMedia: (MediaId) -> Unit,
     onOpenEditor: () -> Unit,
 ) {
@@ -258,18 +309,27 @@ private fun ProjectContent(
         if (missingCount > 0) {
             fullWidth("missing") { MissingMediaBanner(missingCount) }
         }
+        val changedCount = project.media.count { it.uri in changedUris }
+        if (changedCount > 0) {
+            fullWidth("changed") { ChangedMediaBanner(changedCount) }
+        }
         fullWidth("editor-status") { EditorCard(onOpenEditor) }
         fullWidth("media-header") {
             SectionHeader(stringResource(R.string.project_media_section, project.media.size))
         }
         items(project.media, key = { it.id.value }) { media ->
-            ProjectMediaTile(media, missing = media.uri in missingUris, onOpen = { onOpenMedia(media.id) })
+            ProjectMediaTile(
+                media = media,
+                missing = media.uri in missingUris,
+                changed = media.uri in changedUris,
+                onOpen = { onOpenMedia(media.id) },
+            )
         }
     }
 }
 
 @Composable
-private fun ProjectMediaTile(media: MediaRef, missing: Boolean, onOpen: () -> Unit) {
+private fun ProjectMediaTile(media: MediaRef, missing: Boolean, changed: Boolean, onOpen: () -> Unit) {
     MediaTile(
         modifier = Modifier
             .clip(MaterialTheme.shapes.small)
@@ -277,8 +337,14 @@ private fun ProjectMediaTile(media: MediaRef, missing: Boolean, onOpen: () -> Un
         uri = media.uri,
         kind = media.kind.thumbnailKind,
         title = media.titleText(),
-        subtitle = if (missing) stringResource(R.string.project_media_missing_detail) else media.detailText(),
-        subtitleColor = if (missing) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+        subtitle = when {
+            // Temporary access explains why the file "disappeared" after a restart.
+            missing && !media.accessPersisted -> stringResource(R.string.project_media_access_expired)
+            missing -> stringResource(R.string.project_media_missing_detail)
+            changed -> stringResource(R.string.project_media_changed_detail)
+            else -> media.detailText()
+        },
+        subtitleColor = if (missing || changed) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
         badge = if (missing) null else media.badgeText(),
     ) {
         if (missing) {
@@ -295,6 +361,25 @@ private fun ProjectMediaTile(media: MediaRef, missing: Boolean, onOpen: () -> Un
                 Modifier
                     .align(Alignment.BottomEnd)
                     .padding(Spacing.xs + Spacing.xxs),
+            )
+        }
+    }
+}
+
+/** Explains source files that changed since import. Their clips may no longer line up with the footage. */
+@Composable
+private fun ChangedMediaBanner(count: Int) {
+    Surface(
+        color = MaterialTheme.colorScheme.secondaryContainer,
+        shape = MaterialTheme.shapes.medium,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Row(horizontalArrangement = Arrangement.spacedBy(Spacing.md), modifier = Modifier.padding(Spacing.lg)) {
+            Icon(Icons.Filled.Warning, contentDescription = null, tint = MaterialTheme.colorScheme.onSecondaryContainer)
+            Text(
+                pluralStringResource(R.plurals.project_changed_banner, count, count),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSecondaryContainer,
             )
         }
     }

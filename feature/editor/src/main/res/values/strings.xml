@@ -44,7 +44,10 @@
     <string name="editor_msg_nothing_to_split">Move the playhead over a clip to split it.</string>
     <string name="editor_msg_split_too_close">Too close to the clip\'s edge to split.</string>
     <string name="editor_msg_no_gaps">This track has no gaps.</string>
-    <string name="editor_msg_save_failed">Your edit couldn\'t be saved. Check free storage.</string>
+    <string name="editor_msg_history_out_of_date">The timeline changed, so earlier steps can\'t be undone.</string>
     <string name="editor_export_pending">Export and effects are still being built. The preview plays the main track only.</string>
     <string name="editor_coming_soon">Coming soon</string>
+    <string name="editor_saved">Saved</string>
+    <string name="editor_saving">Saving…</string>
+    <string name="editor_save_failed">Not saved. Check free storage.</string>
 </resources>

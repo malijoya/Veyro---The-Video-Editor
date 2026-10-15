@@ -44,8 +44,8 @@ decision changes.
 | `:app` | Android app | exists | Activity, Navigation 3 back stack, adaptive navigation suite, manual DI (`AppContainer`). No business logic. |
 | `:core:model` | JVM | exists | Time base (`TimeUs`, `FrameRate`, `DurationFormat`), `Project`, `MediaRef`, `ProjectName` rules, and the first piece of the timeline: `Timeline`/`Track`/`Clip`, plus `DefaultArrangement`. |
 | `:core:designsystem` | Android + Compose | exists | Dark theme tokens (color, type, spacing, shapes), icons, shared components, `MediaThumbnail` and its `ThumbnailProvider` seam. |
-| `:core:timeline` | JVM | exists | Editing domain: `EditCommand`, `TimelineEditor` (trim, split, move/reorder, delete, close gaps), `Snapper` (edge, playhead and frame snapping), `EditHistory` (undo/redo). |
-| `:data:project` | Android (JVM-only code so far) | exists | `ProjectRepository`. `FileProjectRepository` stores versioned JSON documents with atomic writes. Room index planned for M3. |
+| `:core:timeline` | JVM | exists | Editing domain: `EditCommand`, `TimelineEditor` (trim, split, move/reorder, delete, close gaps), `Snapper` (edge, playhead and frame snapping, zoom-independent threshold), `TimelinePatch` and `EditHistory` (patch-based undo/redo). |
+| `:data:project` | Android | exists | `ProjectRepository`. `FileProjectRepository` stores versioned JSON documents through `ProjectDocumentStore` (safe writes with backup). `RoomProjectIndex` holds list metadata. Also `ProjectAutosave`, `ProjectInterchange` (portable project files), `ProjectFileGateway` (Storage Access Framework) and `SourceReferencePolicy`. |
 | `:media:import` | Android | exists | `MediaProber` (metadata via `MediaExtractor` and `MediaMetadataRetriever`), `MediaMetadataAssembler` (pure merge rules), `MimeTypes`, `MediaAccess` (persisted grants, availability), `ThumbnailLoader` (video frame, image, audio cover art, LRU). Package is `media.importer` because `import` is a Kotlin keyword. |
 | `:feature:library` | Android + Compose | exists | Home and Projects tabs (`LibraryViewModel`). |
 | `:feature:project` | Android + Compose | exists | Media import (pickers, probing, selection, create or add to project) and project overview with missing-media detection. |
@@ -186,6 +186,64 @@ Android `namespace` is the same string:
 - **Errors:** Media3 error codes map to `PreviewError` categories, each with
   its own message and a retry.
 
+## Project persistence
+
+- **Source of truth:** one versioned JSON document per project
+  (`files/projects/<id>/project.json`). It holds:
+  - settings: canvas size, frame rate, edge snapping, new-photo length
+  - media references: URI plus a fingerprint (name, size, duration), the
+    probed metadata, and whether access was persisted
+  - tracks in order, with clips (timeline start, source in-point, duration,
+    effects)
+
+  All times are integer microseconds, and frame rates are exact fractions.
+- **Index:** Room database `project-index.db` with tables `projects` and
+  `project_media`. It serves project lists and "which files are still
+  used" without opening documents.
+  - It is derived data: reconciled with the folders on disk when the
+    repository first starts (missing rows added, stale rows removed).
+  - Its schema is exported to `data/project/schemas`.
+  - A failed index migration falls back to a rebuild.
+  - Index write failures never fail a save.
+- **Safe writes (`ProjectDocumentStore`):**
+  1. Write `.tmp` and `fsync` it.
+  2. Rename the current document to `.bak`.
+  3. Rename `.tmp` to `project.json`.
+
+  Reads fall back to a complete `.tmp`, then `.bak`. Recovery is logged. A
+  document from a newer app version is never replaced by an older backup.
+- **Migrations:** v1 → v2 → v3 → v4 run on read, and documents are rewritten
+  in the current schema on their next save. Every version has a verbatim
+  fixture test.
+- **Autosave (`ProjectAutosave`):**
+  - Edits show immediately and are written 600 ms after the last edit, as
+    one write per burst.
+  - The editor flushes pending edits on `ON_STOP` and when it closes. The
+    write runs in an app-wide scope, so it finishes after the screen is gone.
+  - The editor's top bar shows Saved, Saving… or Not saved. Failed writes
+    are retried by the next save.
+- **Interchange:** `*.veyro.json` is `{format, formatVersion, project:
+  <stored document>}`.
+  - Export is in the project screen's menu, and import is on the Projects
+    tab.
+  - Imported projects get a new ID and go through the normal migrations.
+  - On another device their media usually shows as missing, rather than the
+    import failing.
+- **Source references:** media is referenced where the user keeps it, never
+  copied.
+  - `SourceReferencePolicy` rejects `file:` paths in the app's cache, code
+    cache, external cache, `/tmp` and `/data/local/tmp`. This is checked both
+    at import and in the repository.
+  - Providers that refuse persisted access are recorded per media item, so a
+    later "missing" can be explained as expired access.
+- **Media health:** when a project is opened and on every resume, each
+  source file is checked. It is missing if it can't be opened, and changed
+  if its size differs from import time. Both are flagged on the project
+  screen. Relinking comes later.
+- **Effects:** clips carry a portable effect list (`type` + numeric
+  `params`), and edits keep it. **No effect is rendered or editable yet**
+  (M7).
+
 ## Timeline editing
 
 - **Clip ranges:** a clip has a timeline range `[startUs, endUs)` and a source
@@ -209,11 +267,33 @@ Android `namespace` is the same string:
 - **Split:** the parts are adjacent on the timeline (`left.end ==
   right.start`) and contiguous in the source (`left.sourceOut ==
   right.sourceIn`), so playback across the cut is identical.
-- **Snapping (`Snapper`):** within a fixed on-screen distance (12 dp,
-  converted with the current scale), drags snap to other clips' edges, the
-  playhead or 0. Otherwise they round to the nearest frame of the timeline's
-  frame rate (from the first video, or 30 fps). Splits snap the playhead to
-  a frame.
+- **Snapping (`Snapper`):**
+  - Drags snap to other clips' edges, the playhead or 0 when within the
+    project's snap distance. Otherwise they round to the nearest frame of
+    the timeline's frame rate. Splits snap the playhead to a frame.
+  - The distance is set on screen (`ProjectSettings.snapDistanceDp`: 6, 12
+    or 20 dp, default 12) and converted to time at the current zoom with
+    `Snapper.thresholdUs`. A drag ending N pixels from a target therefore
+    snaps the same way at every zoom level.
+  - The threshold never drops below half a frame, so an off-grid target
+    stays reachable when zoomed far in.
+  - Moving a clip on a free track snaps whichever edge is closer to a
+    target. Ties go to the start, and between targets to the earlier one.
+- **Undo/redo (`EditHistory`, `TimelinePatch`):**
+  - Each step is a `RecordedEdit`: the command plus a `TimelinePatch`
+    holding only the clips it changed (old and new values per track).
+    Clips point to media by ID and share their effect lists, so history
+    never copies media or whole timelines.
+  - Undo applies the patch's inverse; redo re-applies the patch. Neither
+    re-runs the engine, so redo restores the exact clip IDs a split
+    created.
+  - A patch first checks that every clip it removes is present and
+    unchanged, that added IDs are free, that nothing overlaps, and that
+    the main track stays packed. If the timeline changed outside the
+    history, the step is refused (`HistoryStep.Conflict`), the timeline is
+    untouched, and the stale steps in that direction are dropped.
+  - Bounded to 200 steps and 20 000 clip records (about 1–2 MB), dropping
+    the oldest first. The newest step is always kept.
 - **UI to domain:**
   - Compose only reports drag distances, converted once with
     `TimelineScale`.
@@ -221,7 +301,7 @@ Android `namespace` is the same string:
     the drag began, and shows the result as a draft. It saves a single
     undoable edit on release.
   - The preview plays the saved timeline, so drags don't reload the player.
-  - Undo history (100 steps) lives as long as the editor's ViewModel.
+  - Undo history lives as long as the editor's ViewModel.
 - **Storage:** the edited timeline is saved in the project document
   (schema v3). Unedited projects store none and show the default
   arrangement. Media imported after editing is appended to the end of the
@@ -306,13 +386,17 @@ ExoPlayer and Transformer without conversion.
   `kotlinx-serialization` and carries an explicit `schemaVersion`. Migrations
   are pure functions `vN → vN+1` in `:core:model`, with a test fixture for
   every past version.
-- **Edits:** each edit is a command `(Project) -> Project`. Undo/redo keeps
-  previous immutable snapshots, so edits never mutate state.
+- **Edits:** each edit is a command applied to an immutable timeline.
+  Undo/redo keeps a small reversible patch per edit (see Undo/redo above),
+  so edits never mutate state.
 - **Schema history:**
   - v1: name and timestamps, plus video and image media.
   - v2: audio media, video/audio track info and tags.
   - v3: the edited timeline (tracks, clips, frame rate). Every clip must
     reference media in the project, or the document is treated as corrupt.
+  - v4: project settings (canvas, frame rate, snapping, photo length),
+    clip effects, and media `accessPersisted`. The frame rate moved from the
+    timeline into settings.
 
   Old versions are decoded and mapped forward in `ProjectDocumentCodec`, and
   documents are always saved in the current version. Each version has a
@@ -412,7 +496,8 @@ Versions checked against Google Maven and Maven Central on 2026-10-14:
 | exifinterface | 1.4.2 | 1.4.2 | — |
 | Media3 exoplayer, ui-compose | 1.11.1 | 1.11.1 | `ContentFrame` is `@UnstableApi`, so it is used only in `PreviewSurface.kt`. |
 | Media3 transformer, effect | — | 1.11.1 | M6/M7 |
-| Room | — | 2.8.5 | M3. Needs KSP: verify that the KSP 2.3.x line works with Kotlin 2.4.21 before adding. |
+| Room (runtime, compiler, testing) | 2.8.5 | 2.8.5 | Project index. `room-runtime` includes coroutines and Flow support, so `room-ktx` isn't needed. |
+| KSP | 2.3.12 | 2.3.12 | Versioned independently of Kotlin. 2.3.10+ supports AGP 9 built-in Kotlin and Kotlin 2.4 (per its release notes). Not yet verified by a build here. |
 
 ## Testing strategy
 

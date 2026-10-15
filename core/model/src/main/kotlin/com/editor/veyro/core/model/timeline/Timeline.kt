@@ -44,11 +44,14 @@ public data class Clip(
     val startUs: Long,
     val sourceInUs: Long,
     val durationUs: Long,
+    /** Effects applied to this clip, in order. Edits (trim, split, move) carry them along unchanged. */
+    val effects: List<ClipEffect> = emptyList(),
 ) {
     init {
         require(startUs >= 0) { "startUs must not be negative" }
         require(sourceInUs >= 0) { "sourceInUs must not be negative" }
         require(durationUs > 0) { "durationUs must be positive" }
+        require(effects.map { it.id }.toSet().size == effects.size) { "Effect IDs must be unique within a clip" }
     }
 
     val endUs: Long get() = startUs + durationUs
@@ -58,6 +61,25 @@ public data class Clip(
 
     /** Whether [timeUs] falls in `[startUs, endUs)`. */
     public operator fun contains(timeUs: Long): Boolean = timeUs >= startUs && timeUs < endUs
+}
+
+/**
+ * An effect attached to a clip, in a portable form: a [type] name and numeric
+ * [params]. The project format stores effects now. Rendering them and an
+ * effects UI come with the effects milestone (M7), so for now effects are
+ * only saved, loaded and carried through edits.
+ */
+public data class ClipEffect(
+    val id: String,
+    val type: String,
+    val enabled: Boolean = true,
+    val params: Map<String, Double> = emptyMap(),
+) {
+    init {
+        require(id.isNotBlank()) { "Effect id must not be blank" }
+        require(type.isNotBlank()) { "Effect type must not be blank" }
+        require(params.values.all { it.isFinite() }) { "Effect parameters must be finite" }
+    }
 }
 
 /** An ordered lane of clips. Clips never overlap and are sorted by start time. */

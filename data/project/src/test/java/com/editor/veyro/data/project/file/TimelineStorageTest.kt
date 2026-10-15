@@ -5,6 +5,7 @@ import com.editor.veyro.core.model.project.MediaKind
 import com.editor.veyro.core.model.project.MediaRef
 import com.editor.veyro.core.model.project.Project
 import com.editor.veyro.core.model.project.ProjectId
+import com.editor.veyro.core.model.project.ProjectSettings
 import com.editor.veyro.core.model.time.FrameRate
 import com.editor.veyro.core.model.timeline.Clip
 import com.editor.veyro.core.model.timeline.ClipId
@@ -56,10 +57,10 @@ class TimelineStorageTest {
     )
 
     @Test
-    fun `timeline round-trips through the v3 document`() {
-        val project = Project(ProjectId("p"), "P", 1, 2, listOf(v, song), edited)
+    fun `timeline round-trips through the current document`() {
+        val project = Project(ProjectId("p"), "P", 1, 2, listOf(v, song), edited, ProjectSettings(1_080, 1_920, FrameRate.FPS_29_97))
         val json = ProjectDocumentCodec.encode(project)
-        assertTrue(json.contains("\"schemaVersion\":3"))
+        assertTrue(json.contains("\"schemaVersion\":4"))
         assertEquals(DecodeResult.Ok(project), ProjectDocumentCodec.decode(json))
     }
 
@@ -94,9 +95,15 @@ class TimelineStorageTest {
         val created = repo.create("Trip", listOf(v, song))
         assertNull(created.timeline)
 
+        // The project's settings own the frame grid, so set 29.97 there first.
+        assertTrue(repo.updateSettings(created.id, created.settings.copy(frameRate = FrameRate.FPS_29_97)))
         assertTrue(repo.updateTimeline(created.id, edited))
         val reloaded = FileProjectRepository(tmp.root, UnconfinedTestDispatcher(testScheduler)).project(created.id).first()!!
         assertEquals(edited, reloaded.timeline)
+
+        // A timeline with a different frame grid is aligned to the settings, keeping every clip time.
+        repo.updateTimeline(created.id, edited.copy(frameRate = FrameRate.FPS_60))
+        assertEquals(FrameRate.FPS_29_97, repo.project(created.id).first()!!.timeline!!.frameRate)
 
         val foreign = edited.withTrack(
             Track(DefaultArrangement.AUDIO_TRACK_ID, TrackKind.AUDIO, listOf(Clip(ClipId("x"), MediaId("ghost"), 0, 0, 1_000))),

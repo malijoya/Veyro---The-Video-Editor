@@ -85,6 +85,10 @@ internal fun LibraryMessageEffect(
     val text = when (message) {
         LibraryMessage.RENAME_FAILED -> stringResource(R.string.library_error_rename)
         LibraryMessage.DELETE_FAILED -> stringResource(R.string.library_error_delete)
+        LibraryMessage.IMPORT_NOT_PROJECT -> stringResource(R.string.library_import_not_project)
+        LibraryMessage.IMPORT_NEWER_VERSION -> stringResource(R.string.library_import_newer)
+        LibraryMessage.IMPORT_DAMAGED -> stringResource(R.string.library_import_damaged)
+        LibraryMessage.IMPORT_FAILED -> stringResource(R.string.library_import_failed)
         null -> null
     }
     LaunchedEffect(message) {

@@ -49,7 +49,14 @@ public sealed interface ImportItem {
     public data class Failed(override val uri: String, val reason: ImportFailure) : ImportItem
 }
 
-public enum class ImportFailure { UNSUPPORTED_TYPE, NOT_ACCESSIBLE, UNREADABLE }
+public enum class ImportFailure {
+    UNSUPPORTED_TYPE,
+    NOT_ACCESSIBLE,
+    UNREADABLE,
+
+    /** The file sits in a cache or temp folder the system may clear, so a project can't depend on it. */
+    TEMPORARY_LOCATION,
+}
 
 /** Set once importing succeeds. The screen then navigates. */
 @Immutable
@@ -87,8 +94,12 @@ public data class MediaImportUiState(
 
     val selectableCount: Int get() = items.count { isSelectable(it) }
 
+    /** Selected media, each marked with whether its access was persisted. */
     val selectedMedia: List<MediaRef>
-        get() = items.filter { isSelected(it) }.map { (it as ImportItem.Ready).media }
+        get() = items.filter { isSelected(it) }.map { item ->
+            val media = (item as ImportItem.Ready).media
+            media.copy(accessPersisted = media.uri !in temporaryAccess)
+        }
 
     val isProbing: Boolean get() = items.any { it is ImportItem.Probing }
 

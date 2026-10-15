@@ -52,6 +52,23 @@ run. Device-dependent checks need a device or emulator.
   - moving clips between tracks
   - persisting undo history across process death
 
+### M1.1 — Undo/redo and snapping hardening (code complete 2026-10-15, awaiting build)
+- **Done:**
+  - Undo history stores `TimelinePatch`es (only the changed clips) with the
+    command, instead of timeline snapshots. Exact redo, including split IDs.
+  - Conflict detection: a step that no longer fits the timeline is refused
+    and reported in the editor instead of corrupting it.
+  - Memory bounds: 200 steps and 20 000 clip records.
+  - Snap distance setting (Fine/Normal/Strong) in project settings, stored
+    as an optional v4 field (older files read with the default).
+  - Zoom-independent threshold with a half-frame floor, deterministic tie
+    breaks, and edge-to-edge snapping when moving clips.
+- **Tests:** sequential edits with exact undo/redo per step, undo-all and
+  redo-all, a 300-edit random session, redo of split IDs, empty and
+  conflicting undo/redo, rejected and no-op edits, patch size and memory
+  budget, snapping at six zoom levels, ViewModel undo-all/redo-all and
+  conflict message, settings round trip and fallback.
+
 Original scope:
 - Track (video/audio/overlay/text) and Clip, with stable IDs, referencing the
   existing `MediaRef`s.
@@ -92,7 +109,33 @@ Original scope:
 - Clear errors for unsupported or corrupt files and for revoked permissions.
 - **Acceptance:** instrumented test on a device with real files.
 
-## M3 — Project persistence (`:data:project`)
+## M3 — Project persistence (`:data:project`) (code complete 2026-10-15, awaiting build)
+- **Done:**
+  - Schema v4: settings, effects, access flag.
+  - Safe writes with `.bak` and `.tmp` recovery.
+  - Room metadata index with reconciliation.
+  - Debounced autosave with flush on stop and close.
+  - Project file export and import.
+  - Cache-path rejection.
+  - Changed-media detection.
+  - Project settings dialog.
+  - Canvas-shaped preview and a snapping toggle in the editor.
+- **Tests:**
+  - close-and-reopen round trip (edits, settings, effects, exact NTSC
+    clip timing)
+  - v1–v3 migrations
+  - backup and temp recovery
+  - index reconciliation and failure tolerance
+  - autosave debounce, flush and retry
+  - interchange round trip and rejection
+  - source policy
+  - Room instrumented test
+- **Still open:**
+  - relinking missing or changed media
+  - persisting undo history
+  - backup rules (exclude the index database, keep documents)
+
+Original scope:
 - kotlinx-serialization JSON documents, Room index and migration framework.
 - Autosave (debounced, atomic write-and-rename) and recovery after process death.
 - Project list screen (`:feature:projects`): create, open, rename, delete.

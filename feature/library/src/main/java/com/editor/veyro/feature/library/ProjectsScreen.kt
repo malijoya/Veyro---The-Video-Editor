@@ -27,7 +27,10 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -37,6 +40,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.res.stringResource
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.editor.veyro.core.designsystem.icon.VeyroIcons
 import com.editor.veyro.core.designsystem.theme.Layout
 import com.editor.veyro.core.designsystem.theme.Spacing
 import com.editor.veyro.core.model.project.ProjectId
@@ -49,11 +53,22 @@ public fun ProjectsRoute(
     onOpenProject: (ProjectId) -> Unit,
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
+    // Some providers label .json files as octet-stream or plain text, so accept those too. The content check is in the ViewModel.
+    val openFile = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        uri?.let { viewModel.importProjectFile(it.toString()) }
+    }
+    LaunchedEffect(state.importedProjectId) {
+        state.importedProjectId?.let {
+            viewModel.importedProjectOpened()
+            onOpenProject(it)
+        }
+    }
     ProjectsScreen(
         state = state,
         contentWindowInsets = contentWindowInsets,
         onNewProject = onNewProject,
         onOpenProject = onOpenProject,
+        onImportFile = { openFile.launch(arrayOf("application/json", "application/octet-stream", "text/plain")) },
         onSortChange = viewModel::setSort,
         onRename = viewModel::rename,
         onDelete = viewModel::delete,
@@ -69,6 +84,7 @@ internal fun ProjectsScreen(
     contentWindowInsets: WindowInsets,
     onNewProject: () -> Unit,
     onOpenProject: (ProjectId) -> Unit,
+    onImportFile: () -> Unit,
     onSortChange: (ProjectSort) -> Unit,
     onRename: (ProjectId, String) -> Unit,
     onDelete: (ProjectId) -> Unit,
@@ -84,6 +100,9 @@ internal fun ProjectsScreen(
             TopAppBar(
                 title = { Text(stringResource(R.string.library_projects_title)) },
                 actions = {
+                    IconButton(onClick = onImportFile, enabled = !state.isImporting) {
+                        Icon(VeyroIcons.FolderOpen, contentDescription = stringResource(R.string.library_import_project_file))
+                    }
                     Box {
                         IconButton(onClick = { sortMenuOpen = true }) {
                             Icon(Icons.AutoMirrored.Filled.List, contentDescription = stringResource(R.string.library_sort))

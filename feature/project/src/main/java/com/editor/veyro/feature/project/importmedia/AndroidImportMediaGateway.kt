@@ -1,6 +1,7 @@
 package com.editor.veyro.feature.project.importmedia
 
 import androidx.core.net.toUri
+import com.editor.veyro.data.project.SourceReferencePolicy
 import com.editor.veyro.media.importer.MediaAccess
 import com.editor.veyro.media.importer.MediaProber
 import com.editor.veyro.media.importer.ProbeFailure
@@ -10,12 +11,15 @@ import com.editor.veyro.media.importer.ProbeResult
 public class AndroidImportMediaGateway(
     private val prober: MediaProber,
     private val access: MediaAccess,
+    private val sourcePolicy: SourceReferencePolicy = SourceReferencePolicy.PERMISSIVE,
 ) : ImportMediaGateway {
 
     override suspend fun persistAccess(uri: String): Boolean = access.persist(uri.toUri())
 
-    override suspend fun probe(uri: String): ImportMediaGateway.Result =
-        when (val result = prober.probe(uri.toUri())) {
+    override suspend fun probe(uri: String): ImportMediaGateway.Result {
+        // Checked before probing: a cache file may work today and vanish tomorrow.
+        if (!sourcePolicy.isPermanent(uri)) return ImportMediaGateway.Result.Err(ImportFailure.TEMPORARY_LOCATION)
+        return when (val result = prober.probe(uri.toUri())) {
             is ProbeResult.Success -> ImportMediaGateway.Result.Ok(result.media)
             is ProbeResult.Failure -> ImportMediaGateway.Result.Err(
                 when (result.reason) {
@@ -25,6 +29,7 @@ public class AndroidImportMediaGateway(
                 },
             )
         }
+    }
 
     override suspend fun releaseAllExcept(referencedUris: Set<String>) {
         access.releaseAllExcept(referencedUris)

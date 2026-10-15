@@ -33,7 +33,7 @@ public class SettingsViewModel(
     private val mediaCount = MutableStateFlow<Int?>(null)
 
     public val uiState: StateFlow<SettingsUiState> = combine(
-        repository.projects
+        repository.summaries
             .map<_, Pair<Int?, Long?>> { it.size to repository.storageBytes() }
             .catch { emit(null to null) },
         mediaCount,

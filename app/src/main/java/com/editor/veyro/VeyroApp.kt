@@ -33,7 +33,6 @@ import com.editor.veyro.media.playback.PreviewController
 import com.editor.veyro.feature.library.HomeRoute
 import com.editor.veyro.feature.library.LibraryViewModel
 import com.editor.veyro.feature.library.ProjectsRoute
-import androidx.core.net.toUri
 import com.editor.veyro.feature.project.importmedia.AndroidImportMediaGateway
 import com.editor.veyro.feature.project.importmedia.ImportTarget
 import com.editor.veyro.feature.project.importmedia.MediaImportRoute
@@ -104,7 +103,7 @@ fun VeyroApp(container: AppContainer) {
             entryProvider = entryProvider {
                 entry<HomeKey> {
                     HomeRoute(
-                        viewModel = viewModel { LibraryViewModel(container.projects) },
+                        viewModel = viewModel { LibraryViewModel(container.projects, container.projectFiles::readText) },
                         contentWindowInsets = tabInsets,
                         onNewFromGallery = { backStack.add(ImportKey(MediaSource.GALLERY)) },
                         onNewFromFiles = { backStack.add(ImportKey(MediaSource.FILES)) },
@@ -115,7 +114,7 @@ fun VeyroApp(container: AppContainer) {
                 }
                 entry<ProjectsKey> {
                     ProjectsRoute(
-                        viewModel = viewModel { LibraryViewModel(container.projects) },
+                        viewModel = viewModel { LibraryViewModel(container.projects, container.projectFiles::readText) },
                         contentWindowInsets = tabInsets,
                         onNewProject = { backStack.add(ImportKey(MediaSource.GALLERY)) },
                         onOpenProject = { backStack.add(ProjectKey(it.value)) },
@@ -141,7 +140,7 @@ fun VeyroApp(container: AppContainer) {
                                 target = key.projectId?.let { ImportTarget.ExistingProject(ProjectId(it)) }
                                     ?: ImportTarget.NewProject,
                                 repository = container.projects,
-                                media = AndroidImportMediaGateway(container.mediaProber, container.mediaAccess),
+                                media = AndroidImportMediaGateway(container.mediaProber, container.mediaAccess, container.sourcePolicy),
                                 defaultName = defaultProjectName(context),
                             )
                         },
@@ -162,7 +161,8 @@ fun VeyroApp(container: AppContainer) {
                             ProjectViewModel(
                                 projectId = ProjectId(key.projectId),
                                 repository = container.projects,
-                                isAvailable = { uri -> container.mediaAccess.isAvailable(uri.toUri()) },
+                                checkMedia = container.mediaAccess::health,
+                                writeProjectFile = container.projectFiles::writeText,
                             )
                         },
                         onBack = { backStack.removeLastOrNull() },
@@ -183,6 +183,7 @@ fun VeyroApp(container: AppContainer) {
                                 createController = { scope ->
                                     PreviewController(engineFactory = { ExoPlaybackEngine(appContext) }, scope = scope)
                                 },
+                                autosave = container.autosave,
                             )
                         },
                         onBack = { backStack.removeLastOrNull() },

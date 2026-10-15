@@ -14,6 +14,7 @@
     <string name="project_failure_unsupported">Not a video, photo or audio file</string>
     <string name="project_failure_not_accessible">File can\'t be opened</string>
     <string name="project_failure_unreadable">File can\'t be read</string>
+    <string name="project_failure_temporary">File is in a temporary folder. Save it somewhere permanent first.</string>
     <string name="project_create_failed">The project couldn\'t be saved. Check free storage and try again.</string>
     <plurals name="project_create">
         <item quantity="one">Create project with %1$d item</item>
@@ -101,4 +102,32 @@
     <string name="preview_error_corrupt">The file appears to be damaged.</string>
     <string name="preview_error_audio">The audio output couldn\'t start.</string>
     <string name="preview_error_unknown">Something went wrong during playback.</string>
+    <!-- Project settings, export, media health -->
+    <string name="project_more">More options</string>
+    <string name="project_settings">Project settings</string>
+    <string name="project_settings_canvas">Canvas · %1$d×%2$d</string>
+    <string name="project_settings_match_media">Match media</string>
+    <string name="project_canvas_9_16">9:16</string>
+    <string name="project_canvas_16_9">16:9</string>
+    <string name="project_canvas_1_1">1:1</string>
+    <string name="project_canvas_4_5">4:5</string>
+    <string name="project_settings_frame_rate">Frame rate</string>
+    <string name="project_settings_frame_rate_hint">Sets the editing grid and minimum clip length. Existing clips keep their exact timing.</string>
+    <string name="project_settings_photo_duration">New photo length</string>
+    <string name="project_settings_seconds">%1$d s</string>
+    <string name="project_settings_snap">Snap to edges</string>
+    <string name="project_settings_snap_hint">Dragged edges stick to other clips and the playhead. Frames always snap.</string>
+    <string name="project_settings_snap_distance">Snap distance</string>
+    <string name="project_settings_snap_fine">Fine</string>
+    <string name="project_settings_snap_normal">Normal</string>
+    <string name="project_settings_snap_strong">Strong</string>
+    <string name="project_export_file">Export project file</string>
+    <string name="project_exported">Project file saved</string>
+    <string name="project_export_failed">The project file couldn\'t be saved.</string>
+    <string name="project_media_changed_detail">File changed since import</string>
+    <string name="project_media_access_expired">Access expired. Import it again.</string>
+    <plurals name="project_changed_banner">
+        <item quantity="one">%1$d file has changed since it was imported. Its clips may no longer match the footage.</item>
+        <item quantity="other">%1$d files have changed since they were imported. Their clips may no longer match the footage.</item>
+    </plurals>
 </resources>

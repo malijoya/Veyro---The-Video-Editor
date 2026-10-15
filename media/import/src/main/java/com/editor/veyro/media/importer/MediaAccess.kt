@@ -49,6 +49,39 @@ public class MediaAccess(
         }
     }
 
+    /**
+     * Checks a project's source file: [MediaHealth.MISSING] if it can't be
+     * opened, and [MediaHealth.CHANGED] if its size no longer matches the size
+     * recorded at import. The size is the provider's `OpenableColumns.SIZE`, or
+     * the file length for `file://`. Unknown sizes count as unchanged.
+     */
+    public suspend fun health(media: com.editor.veyro.core.model.project.MediaRef): com.editor.veyro.core.model.project.MediaHealth =
+        withContext(ioDispatcher) {
+            val uri = Uri.parse(media.uri)
+            if (!isAvailable(uri)) return@withContext com.editor.veyro.core.model.project.MediaHealth.MISSING
+            val expected = media.sizeBytes ?: return@withContext com.editor.veyro.core.model.project.MediaHealth.AVAILABLE
+            val actual = currentSize(uri) ?: return@withContext com.editor.veyro.core.model.project.MediaHealth.AVAILABLE
+            if (actual == expected) {
+                com.editor.veyro.core.model.project.MediaHealth.AVAILABLE
+            } else {
+                com.editor.veyro.core.model.project.MediaHealth.CHANGED
+            }
+        }
+
+    private fun currentSize(uri: Uri): Long? = try {
+        if (uri.scheme == android.content.ContentResolver.SCHEME_FILE) {
+            uri.path?.let { java.io.File(it).length() }
+        } else {
+            context.contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.SIZE), null, null, null)?.use { cursor ->
+                if (cursor.moveToFirst() && !cursor.isNull(0)) cursor.getLong(0) else null
+            }
+        }
+    } catch (e: SecurityException) {
+        null
+    } catch (e: IllegalArgumentException) {
+        null
+    }
+
     override suspend fun releaseAllExcept(referencedUris: Set<String>): Unit = withContext(ioDispatcher) {
         val resolver = context.contentResolver
         resolver.persistedUriPermissions

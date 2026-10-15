@@ -15,14 +15,19 @@ import com.editor.veyro.core.model.time.FrameRate
  * IDs, so both are deterministic.
  */
 public object DefaultArrangement {
-    /** How long a photo stays on screen when first placed. */
+    /** How long a photo stays on screen when first placed, unless the project's settings say otherwise. */
     public const val PHOTO_DURATION_US: Long = 3_000_000
 
     public val VIDEO_TRACK_ID: TrackId = TrackId("video-main")
     public val AUDIO_TRACK_ID: TrackId = TrackId("audio-1")
 
-    /** The timeline the editor shows: the stored one, or the default arrangement if none was saved yet. */
-    public fun timelineFor(project: Project): Timeline = project.timeline ?: build(project)
+    /**
+     * The timeline the editor shows: the stored one, or the default
+     * arrangement if none was saved yet. Its frame grid always comes from the
+     * project's settings.
+     */
+    public fun timelineFor(project: Project): Timeline =
+        (project.timeline ?: build(project)).copy(frameRate = project.settings.frameRate)
 
     public fun build(project: Project): Timeline {
         val empty = Timeline(
@@ -30,23 +35,23 @@ public object DefaultArrangement {
                 Track(VIDEO_TRACK_ID, TrackKind.VIDEO, emptyList()),
                 Track(AUDIO_TRACK_ID, TrackKind.AUDIO, emptyList()),
             ),
-            frameRate = frameRateFor(project.media),
+            frameRate = project.settings.frameRate,
         )
-        return append(empty, project.media)
+        return append(empty, project.media, project.settings.photoDurationUs)
     }
 
     /**
      * Adds [media] at the end of the main track (video and photos) or the
      * audio track (audio). Media already on the timeline is skipped.
      */
-    public fun append(timeline: Timeline, media: List<MediaRef>): Timeline {
+    public fun append(timeline: Timeline, media: List<MediaRef>, photoDurationUs: Long = PHOTO_DURATION_US): Timeline {
         val onTimeline = timeline.tracks.flatMap { track -> track.clips.map { it.mediaId } }.toSet()
         var result = timeline
         for (item in media) {
             if (item.id in onTimeline) continue
             val (trackKind, durationUs) = when (item.kind) {
                 MediaKind.VIDEO -> TrackKind.VIDEO to item.durationUs
-                MediaKind.IMAGE -> TrackKind.VIDEO to PHOTO_DURATION_US
+                MediaKind.IMAGE -> TrackKind.VIDEO to photoDurationUs
                 MediaKind.AUDIO -> TrackKind.AUDIO to item.durationUs
             }
             if (durationUs <= 0) continue

@@ -28,6 +28,7 @@ public data class Project(
      * [com.editor.veyro.core.model.timeline.DefaultArrangement].
      */
     val timeline: com.editor.veyro.core.model.timeline.Timeline? = null,
+    val settings: ProjectSettings = ProjectSettings.DEFAULT,
 ) {
     /** The media that represents the project in lists: the first visual item, else the first item. */
     val coverMedia: MediaRef? get() = media.firstOrNull { it.kind != MediaKind.AUDIO } ?: media.firstOrNull()

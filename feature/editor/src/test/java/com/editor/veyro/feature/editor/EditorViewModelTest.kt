@@ -12,6 +12,7 @@ import com.editor.veyro.core.model.timeline.ClipId
 import com.editor.veyro.core.model.timeline.DefaultArrangement
 import com.editor.veyro.core.model.timeline.Timeline
 import com.editor.veyro.core.model.timeline.TrackKind
+import com.editor.veyro.data.project.ProjectAutosave
 import com.editor.veyro.data.project.ProjectRepository
 import com.editor.veyro.media.playback.EngineItem
 import com.editor.veyro.media.playback.EngineStatus
@@ -75,9 +76,9 @@ class EditorViewModelTest {
     private class FakeRepository(project: Project) : ProjectRepository {
         val saved = MutableStateFlow(listOf(project))
         var timelineSaves = 0
-        override val projects: Flow<List<Project>> = saved
+        override val summaries: Flow<List<com.editor.veyro.data.project.ProjectSummary>> = saved.map { all -> all.map(com.editor.veyro.data.project.ProjectSummary::of) }
         override fun project(id: ProjectId) = saved.map { all -> all.firstOrNull { it.id == id } }
-        override suspend fun create(name: String, media: List<MediaRef>) = error("unused")
+        override suspend fun create(name: String, media: List<MediaRef>, settings: com.editor.veyro.core.model.project.ProjectSettings?) = error("unused")
         override suspend fun addMedia(id: ProjectId, media: List<MediaRef>): Int? {
             saved.value = saved.value.map {
                 if (it.id == id) it.copy(media = it.media + media, timeline = it.timeline?.let { t -> DefaultArrangement.append(t, media) }) else it
@@ -88,6 +89,15 @@ class EditorViewModelTest {
             timelineSaves++
             saved.value = saved.value.map { if (it.id == id) it.copy(timeline = timeline) else it }
             return true
+        }
+        override suspend fun updateSettings(id: ProjectId, settings: com.editor.veyro.core.model.project.ProjectSettings): Boolean {
+            saved.value = saved.value.map { if (it.id == id) it.copy(settings = settings, timeline = it.timeline?.copy(frameRate = settings.frameRate)) else it }
+            return saved.value.any { it.id == id }
+        }
+        override suspend fun importProject(project: Project): Project {
+            val imported = project.copy(id = ProjectId("imported-${saved.value.size}"))
+            saved.value = saved.value + imported
+            return imported
         }
         override suspend fun rename(id: ProjectId, name: String) = false
         override suspend fun delete(id: ProjectId) = false
@@ -111,6 +121,8 @@ class EditorViewModelTest {
             projectId = ProjectId("p"),
             repository = repository,
             createController = { scope -> PreviewController({ RecordingEngine().also { engines += it } }, scope) },
+            // No debounce in tests: each edit is written as soon as it's made.
+            autosave = ProjectAutosave(repository, kotlinx.coroutines.CoroutineScope(UnconfinedTestDispatcher(testScheduler)), delayMs = 0),
             newClipId = { ClipId("split-${nextClip++}") },
         )
         backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.uiState.collect {} }
@@ -228,8 +240,8 @@ class EditorViewModelTest {
 
         vm.beginDrag(ClipId("clip-v"), DragHandle.END)
         assertEquals(ClipId("clip-v"), vm.ready().selectedClip?.id) // Starting a drag selects the clip.
-        vm.updateDrag(deltaUs = -1_000_000, snapThresholdUs = 0, playheadUs = 0)
-        vm.updateDrag(deltaUs = -1_500_000, snapThresholdUs = 0, playheadUs = 0)
+        vm.updateDrag(deltaUs = -1_000_000, pxPerSecond = MAX_ZOOM, pxPerDp = 1f, playheadUs = 0)
+        vm.updateDrag(deltaUs = -1_500_000, pxPerSecond = MAX_ZOOM, pxPerDp = 1f, playheadUs = 0)
         val draft = vm.ready()
         assertTrue(draft.isDragging)
         assertEquals(2_500_000L, draft.main().clips[0].durationUs)
@@ -248,12 +260,12 @@ class EditorViewModelTest {
     fun `trim drag snaps to the playhead and reports the guide`() = runTest {
         val vm = viewModel(FakeRepository(project(media("v", MediaKind.VIDEO, 4_000_000))))
         vm.beginDrag(ClipId("clip-v"), DragHandle.END)
-        // The end edge is dragged to 2.98 s. The playhead at 3 s is within the 50 ms threshold.
-        vm.updateDrag(deltaUs = -1_020_000, snapThresholdUs = 50_000, playheadUs = 3_000_000)
+        // At 240 px/s the default 12 dp snap distance (density 1) is 50 ms. The end edge is dragged to 2.98 s, within 50 ms of the playhead at 3 s.
+        vm.updateDrag(deltaUs = -1_020_000, pxPerSecond = 240f, pxPerDp = 1f, playheadUs = 3_000_000)
         assertEquals(3_000_000L, vm.ready().main().clips[0].endUs)
         assertEquals(3_000_000L, vm.ready().snapGuideUs)
         // Outside the threshold, it rounds to the frame grid with no guide.
-        vm.updateDrag(deltaUs = -1_510_000, snapThresholdUs = 50_000, playheadUs = 3_000_000)
+        vm.updateDrag(deltaUs = -1_510_000, pxPerSecond = 240f, pxPerDp = 1f, playheadUs = 3_000_000)
         assertNull(vm.ready().snapGuideUs)
         assertEquals(FrameRate.FPS_30.snapUs(2_490_000), vm.ready().main().clips[0].endUs)
     }
@@ -263,7 +275,7 @@ class EditorViewModelTest {
         val repository = FakeRepository(project(media("v", MediaKind.VIDEO, 4_000_000)))
         val vm = viewModel(repository)
         vm.beginDrag(ClipId("clip-v"), DragHandle.START)
-        vm.updateDrag(1_000_000, 0, 0)
+        vm.updateDrag(1_000_000, MAX_ZOOM, 1f, 0)
         vm.cancelDrag()
         assertEquals(4_000_000L, vm.ready().main().clips[0].durationUs)
         assertEquals(0, repository.timelineSaves)
@@ -274,7 +286,7 @@ class EditorViewModelTest {
     fun `dragging a clip body on the main track reorders it`() = runTest {
         val vm = viewModel(FakeRepository(project(media("a", MediaKind.VIDEO, 2_000_000), media("b", MediaKind.VIDEO, 2_000_000))))
         vm.beginDrag(ClipId("clip-b"), DragHandle.BODY)
-        vm.updateDrag(deltaUs = -2_000_000, snapThresholdUs = 0, playheadUs = 0)
+        vm.updateDrag(deltaUs = -2_000_000, pxPerSecond = MAX_ZOOM, pxPerDp = 1f, playheadUs = 0)
         vm.endDrag()
         assertEquals(listOf("clip-b", "clip-a"), vm.ready().main().clips.map { it.id.value })
     }
@@ -313,5 +325,97 @@ class EditorViewModelTest {
         val saved = SavedStateHandle()
         viewModel(repository, saved).selectClip(ClipId("clip-v"))
         assertNotNull(viewModel(repository, saved).ready().selectedClip)
+    }
+
+    // ---------------- History across edits ----------------
+
+    @Test
+    fun `undo all and redo all across split, trim and delete`() = runTest {
+        val repository = FakeRepository(project(media("v", MediaKind.VIDEO, 4_000_000), media("w", MediaKind.VIDEO, 3_000_000)))
+        val vm = viewModel(repository)
+        val original = vm.ready().main().clips
+
+        vm.split(2_000_000) // v -> v | split-0
+        vm.beginDrag(ClipId("clip-w"), DragHandle.END)
+        vm.updateDrag(deltaUs = -1_000_000, pxPerSecond = MAX_ZOOM, pxPerDp = 1f, playheadUs = 0)
+        vm.endDrag() // w trimmed to 2 s
+        vm.selectClip(ClipId("split-0"))
+        vm.deleteSelected(closeGap = true)
+        val edited = vm.ready().main().clips
+        assertEquals(listOf("clip-v", "clip-w"), edited.map { it.id.value })
+
+        repeat(3) { vm.undo() }
+        assertEquals(original, vm.ready().main().clips)
+        assertFalse(vm.ready().canUndo)
+        assertEquals(original.map { it.id }, repository.saved.value.single().timeline!!.mainTrack!!.clips.map { it.id })
+
+        repeat(3) { vm.redo() }
+        assertEquals(edited, vm.ready().main().clips)
+        assertFalse(vm.ready().canRedo)
+    }
+
+    @Test
+    fun `undoing a split clears a selection on the removed part`() = runTest {
+        val vm = viewModel(FakeRepository(project(media("v", MediaKind.VIDEO, 4_000_000))))
+        vm.split(2_000_000)
+        assertEquals(ClipId("split-0"), vm.ready().selectedClip?.id)
+        vm.undo()
+        assertNull(vm.ready().selectedClip)
+    }
+
+    @Test
+    fun `undo still works after media is appended`() = runTest {
+        val repository = FakeRepository(project(media("v", MediaKind.VIDEO, 4_000_000)))
+        val vm = viewModel(repository)
+        vm.split(2_000_000)
+        repository.addMedia(ProjectId("p"), listOf(media("w", MediaKind.VIDEO, 1_000_000)))
+        vm.undo()
+        assertEquals(listOf("clip-v", "clip-w"), vm.ready().main().clips.map { it.id.value })
+        assertEquals(4_000_000L, vm.ready().main().clips[0].durationUs)
+    }
+
+    @Test
+    fun `undo that no longer fits the timeline reports it and changes nothing`() = runTest {
+        val repository = FakeRepository(project(media("v", MediaKind.VIDEO, 4_000_000)))
+        val vm = viewModel(repository)
+        vm.split(2_000_000)
+        // Another writer replaces the timeline: the split's clips are gone.
+        val replaced = repository.saved.value.single().timeline!!.let { t ->
+            t.withTrack(t.mainTrack!!.copy(clips = t.mainTrack!!.clips.take(1)))
+        }
+        repository.updateTimeline(ProjectId("p"), replaced)
+        vm.undo()
+        assertEquals(EditorMessage.HISTORY_OUT_OF_DATE, vm.ready().message)
+        assertFalse(vm.ready().canUndo)
+        assertEquals(listOf("clip-v"), vm.ready().main().clips.map { it.id.value })
+    }
+
+    // ---------------- Snapping at different zoom levels ----------------
+
+    @Test
+    fun `snap distance is the same on screen at every zoom`() = runTest {
+        // Audio track: s1 [0..3 s), s2 [3..12 s). s2's end is dragged back towards the playhead at 6 s.
+        val vm = viewModel(FakeRepository(project(media("s1", MediaKind.AUDIO, 3_000_000), media("s2", MediaKind.AUDIO, 9_000_000))))
+        val s2 = ClipId("clip-s2")
+        for (pxPerSecond in listOf(20f, 60f, 300f, 1_200f)) {
+            val usPerPx = 1_000_000.0 / pxPerSecond
+            val endUs = vm.ready().audio().clips[1].endUs
+            fun dragEndTo(pxFromPlayhead: Double): Long? {
+                vm.beginDrag(s2, DragHandle.END)
+                val target = 6_000_000L - (pxFromPlayhead * usPerPx).toLong()
+                vm.updateDrag(target - endUs, pxPerSecond, pxPerDp = 2f, playheadUs = 6_000_000)
+                val guide = vm.ready().snapGuideUs
+                vm.cancelDrag()
+                return guide
+            }
+            // 12 dp at 2 px/dp is 24 px. 20 px away snaps; 30 px away doesn't.
+            assertEquals("zoom $pxPerSecond", 6_000_000L, dragEndTo(20.0))
+            assertNull("zoom $pxPerSecond", dragEndTo(30.0))
+        }
+    }
+
+    private companion object {
+        /** The deepest zoom. The snap distance there is only half a frame, so test drags land where they're aimed. */
+        const val MAX_ZOOM = com.editor.veyro.feature.editor.timeline.TimelineScale.MAX_PX_PER_SECOND
     }
 }
