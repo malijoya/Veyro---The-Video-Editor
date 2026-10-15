@@ -456,7 +456,7 @@ private fun SwitchRow(@StringRes label: Int, checked: Boolean, enabled: Boolean,
 }
 
 @Composable
-private fun LabeledSlider(
+internal fun LabeledSlider(
     label: String,
     valueText: String,
     value: Float,

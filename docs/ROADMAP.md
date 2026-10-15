@@ -298,6 +298,41 @@ Original scope:
 - **Still open:** animation and keyframes for overlays, custom font import,
   text templates, animated stickers, picture-in-picture video overlays.
 
+## M8 — Clip transforms (code complete 2026-10-15, awaiting build and device run)
+- **Done:**
+  - Model: `ClipTransform` (position, scale, clockwise rotation, anchor,
+    crop, crop shape lock, fit or fill, opacity) on video-track clips, in
+    canvas and source fractions only. `ClipPlacement` is the shared
+    geometry and produces the render matrices. Schema v7.
+  - Rendering: per-item crop, placement and opacity effects, one shader
+    pass, identical in preview (CompositionPlayer) and export
+    (Transformer); rotated and portrait sources are laid out upright from
+    the decoded frame size.
+  - Live preview: transform-only changes update the running composition in
+    place and redraw the paused frame, without reloading.
+  - Editor: tap to select the picture; drag, pinch, twist and a corner
+    handle, with snapping; crop frame on the preview; Transform panel with
+    Fit, Fill, Reset, position, crop shapes and anchor.
+- **Tests:**
+  - JVM: value validation and coercion; crop shapes, corner drags with a
+    locked shape, moves; layout at several resolutions and with proxies;
+    clockwise rotation about the anchor; conversions both ways; anchor and
+    crop edits that keep the picture still; fit and fill of turned
+    pictures; render matrices against the editor geometry. Edits, split,
+    undo/redo; plan carries transforms and upright sizes; storage round
+    trip, leniency, v6 compatibility; ViewModel drafts rendered in place as
+    one undo step, fit, fill, reset; controller in-place path.
+  - Instrumented (`ClipTransformExportInstrumentedTest`): exported frames
+    measured against `ClipPlacement` at 640x360, 1280x720, 360x640 and
+    480x480; a video with 90 degrees of rotation metadata, upright and
+    turned; an EXIF-rotated photo cropped with and without the marker, with
+    fill; opacity toward black. `CompositionPreviewInstrumentedTest`: a
+    transformed timeline plays to the end and transform-only changes apply
+    in place while timing changes are refused.
+  - All of these need a build and a device run.
+- **Still open:** keyframed transforms, flip, background fill other than
+  black, picture-in-picture.
+
 ## M7+ — Creative features
 Each item follows the model → evaluator → playback and export pattern:
 - Speed ramps.

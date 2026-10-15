@@ -8,6 +8,7 @@ import com.editor.veyro.core.model.project.MediaKind
 import com.editor.veyro.core.model.timeline.ClipId
 import com.editor.veyro.core.model.timeline.Timeline
 import com.editor.veyro.core.model.timeline.TrackId
+import com.editor.veyro.core.model.transform.ClipTransform
 
 /**
  * One edit to a [Timeline]. All times are timeline microseconds.
@@ -85,6 +86,12 @@ public sealed interface EditCommand {
 
     /** Changes where an overlay sits in the stack of overlays it overlaps in time. */
     public data class ArrangeLayer(val clipId: ClipId, val move: LayerMove) : EditCommand
+
+    /**
+     * Replaces a video or photo clip's placement on the canvas: position,
+     * scale, rotation, anchor, crop, fit and opacity.
+     */
+    public data class SetClipTransform(val clipId: ClipId, val transform: ClipTransform) : EditCommand
 }
 
 /**
@@ -133,6 +140,9 @@ public enum class EditRejection {
 
     /** A sticker whose media isn't an image, or a text overlay given media. */
     UNSUPPORTED_MEDIA,
+
+    /** A transform for a clip that isn't a picture on a video track (audio, text, stickers). */
+    NOT_A_PICTURE,
 }
 
 public sealed interface EditResult {

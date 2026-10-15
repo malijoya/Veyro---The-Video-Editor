@@ -1,7 +1,10 @@
 package com.editor.veyro.media.export
 
 import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Paint
+import android.media.ExifInterface
 import android.media.Image
 import android.media.MediaCodec
 import android.media.MediaCodecInfo
@@ -17,8 +20,8 @@ import kotlin.math.sin
  * Generates small, real media files on the device, so tests exercise genuine
  * containers without binary fixtures in the repo.
  *
- * Copy of `:media:playback`'s test generator, without EXIF support. Move the
- * copies into a shared test-fixtures module.
+ * Copy of `:media:playback`'s test generator, plus marked frames for
+ * measuring placement. Move the copies into a shared test-fixtures module.
  */
 internal object TestMediaFiles {
 
@@ -64,6 +67,26 @@ internal object TestMediaFiles {
         return file
     }
 
+    /**
+     * A grey JPEG with a white block over its top-left quarter (a quarter of
+     * the width by a quarter of the height), as stored. With
+     * [exifOrientation] (an [ExifInterface] orientation), viewers must turn it
+     * upright, which moves the block.
+     */
+    fun markedJpeg(file: File, width: Int, height: Int, exifOrientation: Int = ExifInterface.ORIENTATION_NORMAL): File {
+        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888).apply { eraseColor(Color.rgb(MARK_GREY, MARK_GREY, MARK_GREY)) }
+        Canvas(bitmap).drawRect(0f, 0f, width / 4f, height / 4f, Paint().apply { color = Color.WHITE })
+        file.outputStream().use { bitmap.compress(Bitmap.CompressFormat.JPEG, 95, it) }
+        bitmap.recycle()
+        if (exifOrientation != ExifInterface.ORIENTATION_NORMAL) {
+            ExifInterface(file.absolutePath).apply {
+                setAttribute(ExifInterface.TAG_ORIENTATION, exifOrientation.toString())
+                saveAttributes()
+            }
+        }
+        return file
+    }
+
     fun image(file: File, width: Int, height: Int, format: Bitmap.CompressFormat): File {
         val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888).apply { eraseColor(Color.MAGENTA) }
         file.outputStream().use { bitmap.compress(format, 90, it) }
@@ -76,7 +99,7 @@ internal object TestMediaFiles {
      * platform encoder. Every Android device and emulator ships an AVC
      * encoder, so this works everywhere the tests run.
      */
-    fun mp4(file: File, width: Int, height: Int, fps: Int, frameCount: Int, rotationDegrees: Int = 0): File {
+    fun mp4(file: File, width: Int, height: Int, fps: Int, frameCount: Int, rotationDegrees: Int = 0, marked: Boolean = false): File {
         val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height).apply {
             setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible)
             setInteger(MediaFormat.KEY_BIT_RATE, 1_000_000)
@@ -102,7 +125,11 @@ internal object TestMediaFiles {
                             codec.queueInputBuffer(inIndex, 0, 0, ptsUs, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
                             inputDone = true
                         } else {
-                            fillFrame(checkNotNull(codec.getInputImage(inIndex)), width, height, frame)
+                            if (marked) {
+                                fillMarkedFrame(checkNotNull(codec.getInputImage(inIndex)), width, height)
+                            } else {
+                                fillFrame(checkNotNull(codec.getInputImage(inIndex)), width, height, frame)
+                            }
                             codec.queueInputBuffer(inIndex, 0, width * height * 3 / 2, ptsUs, 0)
                             frame++
                         }
@@ -147,6 +174,36 @@ internal object TestMediaFiles {
             }
         }
     }
+
+    /**
+     * Grey, with a white block over the top-left quarter (as stored, before
+     * any rotation metadata is applied). Chroma stays neutral.
+     */
+    private fun fillMarkedFrame(image: Image, width: Int, height: Int) {
+        image.planes.forEachIndexed { index, plane ->
+            val sub = if (index == 0) 1 else 2
+            val planeWidth = width / sub
+            val planeHeight = height / sub
+            val buffer = plane.buffer
+            for (y in 0 until planeHeight) {
+                for (x in 0 until planeWidth) {
+                    val inBlock = x * sub < width / 4 && y * sub < height / 4
+                    val value = when {
+                        index != 0 -> 128
+                        inBlock -> 235
+                        else -> MARK_LUMA
+                    }
+                    buffer.put(y * plane.rowStride + x * plane.pixelStride, value.toByte())
+                }
+            }
+        }
+    }
+
+    /** Video luma of the grey in marked frames (about RGB 120 after conversion). */
+    private const val MARK_LUMA = 119
+
+    /** RGB grey of marked images. */
+    private const val MARK_GREY = 120
 
     private const val TIMEOUT_US = 10_000L
 }

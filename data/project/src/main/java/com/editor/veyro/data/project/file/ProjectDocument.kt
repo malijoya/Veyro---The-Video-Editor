@@ -32,6 +32,10 @@ import com.editor.veyro.core.model.timeline.Timeline
 import com.editor.veyro.core.model.timeline.Track
 import com.editor.veyro.core.model.timeline.TrackId
 import com.editor.veyro.core.model.timeline.TrackKind
+import com.editor.veyro.core.model.transform.AspectRatio
+import com.editor.veyro.core.model.transform.ClipTransform
+import com.editor.veyro.core.model.transform.CropRect
+import com.editor.veyro.core.model.transform.FitMode
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -72,11 +76,15 @@ import kotlinx.serialization.json.jsonPrimitive
  *   or a sticker: content, style and placement. Text clips have no media,
  *   so a clip's mediaId became optional. Again only optional fields on the
  *   v4 shape; older builds refuse v6 files rather than lose overlays.
+ * - v7 (2026-10-15): clip transforms on video-track clips (position, scale,
+ *   rotation, anchor, crop, crop shape lock, fit or fill, opacity), as
+ *   fractions of the canvas and of the upright source. An optional field on
+ *   the v4 shape; absent means the default (whole picture, fitted, centred).
  */
 
-internal const val CURRENT_SCHEMA_VERSION = 6
+internal const val CURRENT_SCHEMA_VERSION = 7
 
-// ======================= v4 / v5 / v6 (current) =======================
+// ======================= v4 / v5 / v6 / v7 (current) =======================
 
 @Serializable
 internal data class ProjectDocumentV4(
@@ -178,7 +186,38 @@ internal data class ClipDocumentV4(
     val audio: ClipAudioDocumentV5? = null,
     /** v6. Present exactly on overlay tracks. */
     val overlay: OverlayDocumentV6? = null,
+    /** v7. Video tracks only. Absent means the default transform. */
+    val transform: TransformDocumentV7? = null,
 )
+
+/**
+ * v7. Position is where the anchor sits, as fractions of the canvas; the
+ * anchor and crop are fractions of the picture and of the upright source,
+ * y down; rotation is clockwise degrees about the anchor. The aspect lock
+ * is "W:H" or absent for a free crop.
+ */
+@Serializable
+internal data class TransformDocumentV7(
+    val positionX: Float = 0.5f,
+    val positionY: Float = 0.5f,
+    val scale: Float = 1f,
+    val rotationDegrees: Float = 0f,
+    val anchorX: Float = 0.5f,
+    val anchorY: Float = 0.5f,
+    val cropLeft: Float = 0f,
+    val cropTop: Float = 0f,
+    val cropRight: Float = 1f,
+    val cropBottom: Float = 1f,
+    val cropAspect: String? = null,
+    val fit: FitModeV7 = FitModeV7.FIT,
+    val opacity: Float = 1f,
+)
+
+@Serializable
+internal enum class FitModeV7 {
+    @SerialName("fit") FIT,
+    @SerialName("fill") FILL,
+}
 
 /**
  * v6. Colors are "#AARRGGBB". Sizes are fractions (of the canvas's shorter
@@ -406,8 +445,8 @@ internal object ProjectDocumentCodec {
         val version = element["schemaVersion"]?.jsonPrimitive?.int ?: error("Missing schemaVersion")
         when {
             version > CURRENT_SCHEMA_VERSION -> DecodeResult.NewerSchema(version)
-            // v5 and v6 only added optional fields to the v4 shape.
-            version in 4..6 -> DecodeResult.Ok(json.decodeFromJsonElement(ProjectDocumentV4.serializer(), element).toModel().validated())
+            // v5, v6 and v7 only added optional fields to the v4 shape.
+            version in 4..7 -> DecodeResult.Ok(json.decodeFromJsonElement(ProjectDocumentV4.serializer(), element).toModel().validated())
             version == 3 -> DecodeResult.Ok(json.decodeFromJsonElement(ProjectDocumentV3.serializer(), element).toModel().validated())
             version == 2 -> DecodeResult.Ok(json.decodeFromJsonElement(ProjectDocumentV2.serializer(), element).toModel())
             version == 1 -> DecodeResult.Ok(json.decodeFromJsonElement(ProjectDocumentV1.serializer(), element).toModel())
@@ -472,6 +511,7 @@ internal object ProjectDocumentCodec {
                                 effects = clip.effects.map { EffectDocumentV4(it.id, it.type, it.enabled, it.params) },
                                 audio = clip.audio.takeIf { it != ClipAudio.DEFAULT }?.toDocument(),
                                 overlay = clip.overlay?.toDocument(),
+                                transform = clip.transform.takeUnless { it.isDefault }?.toDocument(),
                             )
                         },
                     )
@@ -479,6 +519,51 @@ internal object ProjectDocumentCodec {
             )
         },
     )
+
+    private fun ClipTransform.toDocument() = TransformDocumentV7(
+        positionX = positionX,
+        positionY = positionY,
+        scale = scale,
+        rotationDegrees = rotationDegrees,
+        anchorX = anchorX,
+        anchorY = anchorY,
+        cropLeft = crop.left,
+        cropTop = crop.top,
+        cropRight = crop.right,
+        cropBottom = crop.bottom,
+        cropAspect = cropAspect?.toString(),
+        fit = when (fit) {
+            FitMode.FIT -> FitModeV7.FIT
+            FitMode.FILL -> FitModeV7.FILL
+        },
+        opacity = opacity,
+    )
+
+    /** Lenient, like overlays: out-of-range or unreadable values are brought into range or dropped. */
+    private fun TransformDocumentV7.toModel() = ClipTransform.coerced(
+        positionX = positionX,
+        positionY = positionY,
+        scale = scale,
+        rotationDegrees = rotationDegrees,
+        anchorX = anchorX,
+        anchorY = anchorY,
+        crop = CropRect.coerced(cropLeft, cropTop, cropRight, cropBottom),
+        cropAspect = cropAspect?.let(::aspectRatio),
+        fit = when (fit) {
+            FitModeV7.FIT -> FitMode.FIT
+            FitModeV7.FILL -> FitMode.FILL
+        },
+        opacity = opacity,
+    )
+
+    /** "W:H" as an aspect ratio, or null if it isn't one. */
+    private fun aspectRatio(text: String): AspectRatio? {
+        val parts = text.split(':')
+        if (parts.size != 2) return null
+        val w = parts[0].trim().toIntOrNull() ?: return null
+        val h = parts[1].trim().toIntOrNull() ?: return null
+        return AspectRatio.of(w, h)
+    }
 
     private fun Overlay.toDocument(): OverlayDocumentV6 {
         val text = content as? OverlayContent.Text
@@ -629,6 +714,7 @@ internal object ProjectDocumentCodec {
                             },
                             clips = track.clips.map { clip ->
                                 val overlay = clip.overlay?.toModel()
+                                val kind = track.kind.toModel()
                                 Clip(
                                     id = ClipId(clip.id),
                                     // A text overlay never uses media, even if a hand-edited file names some.
@@ -639,6 +725,8 @@ internal object ProjectDocumentCodec {
                                     effects = clip.effects.map { ClipEffect(it.id, it.type, it.enabled, it.params) },
                                     audio = clip.audio?.toModel() ?: ClipAudio.DEFAULT,
                                     overlay = overlay,
+                                    // Only pictures on video tracks are placed; a transform anywhere else is ignored.
+                                    transform = clip.transform?.takeIf { kind == TrackKind.VIDEO }?.toModel() ?: ClipTransform.DEFAULT,
                                 )
                             },
                         )

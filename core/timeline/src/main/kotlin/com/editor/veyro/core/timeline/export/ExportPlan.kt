@@ -4,6 +4,7 @@ import com.editor.veyro.core.model.overlay.Overlay
 import com.editor.veyro.core.model.overlay.OverlayContent
 import com.editor.veyro.core.model.project.MediaKind
 import com.editor.veyro.core.model.time.FrameRate
+import com.editor.veyro.core.model.transform.ClipTransform
 import kotlin.math.roundToLong
 
 /**
@@ -52,6 +53,11 @@ public data class ExportSettings(
  *   `EditedMediaItem.setDurationUs` wants the length before clipping).
  * @property audio the gain for the clip's own sound, or null when it has none
  *   to contribute (photos, videos without an audio stream, muted clips).
+ * @property transform where the picture sits on the output canvas. The
+ *   renderer lays it out with the decoded frame's real (upright) size.
+ * @property sourceWidthPx the source's upright width from the project's
+ *   media info (0 if unknown); for the editor's handles, not for rendering.
+ * @property sourceHeightPx the source's upright height.
  */
 public data class VideoSegment(
     val uri: String,
@@ -60,6 +66,9 @@ public data class VideoSegment(
     val durationUs: Long,
     val sourceDurationUs: Long,
     val audio: SegmentGain? = null,
+    val transform: ClipTransform = ClipTransform.DEFAULT,
+    val sourceWidthPx: Int = 0,
+    val sourceHeightPx: Int = 0,
 ) {
     init {
         require(kind != MediaKind.AUDIO) { "Audio files can't be picture segments" }

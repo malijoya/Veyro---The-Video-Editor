@@ -4,6 +4,7 @@ import android.content.Context
 import android.os.Build
 import androidx.annotation.OptIn
 import androidx.media3.common.C
+import androidx.media3.common.Effect
 import androidx.media3.common.MediaItem
 import androidx.media3.common.audio.AudioProcessor
 import androidx.media3.common.audio.ChannelMixingAudioProcessor
@@ -24,6 +25,8 @@ import com.editor.veyro.core.timeline.export.SegmentGain
 import com.editor.veyro.core.timeline.export.VideoSegment
 import com.editor.veyro.media.render.overlay.StickerImages
 import com.editor.veyro.media.render.overlay.TimelineOverlay
+import com.editor.veyro.media.render.transform.ClipTransformEffects
+import com.editor.veyro.media.render.transform.LiveTransform
 
 /**
  * Translates an [ExportPlan] into a Media3 [Composition], for both export
@@ -43,8 +46,11 @@ import com.editor.veyro.media.render.overlay.TimelineOverlay
  *   per-item audio processors from the clipped item's start in both
  *   Transformer and CompositionPlayer, so fades land in the same place in
  *   preview and export, including after seeks. Items at unity gain skip it.
- * - A composition-wide [Presentation] scales and letterboxes everything to
- *   the chosen size.
+ * - Each picture item is placed on the output canvas by its own transform
+ *   ([ClipTransformEffects]: crop, fit or fill, scale, rotation about the
+ *   anchor, position, opacity), so every item leaves its effects at the
+ *   chosen output size. The composition-wide [Presentation] after them is
+ *   then a no-op safety net that keeps the output at that size.
  * - Text and stickers ([ExportPlan.overlays]) are drawn after it, by one
  *   composition-wide [OverlayEffect] ([TimelineOverlay]), so they sit on the
  *   output canvas, in timeline time, over photos and videos alike.
@@ -56,7 +62,7 @@ public object CompositionFactory {
 
     /** The composition Transformer exports. HDR sources are tone-mapped to SDR on Android 10+. */
     public fun forExport(plan: ExportPlan, context: Context): Composition =
-        build(plan, context, toneMapHdr = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)
+        build(plan, context, toneMapHdr = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q, transforms = fixedTransforms(plan))
 
     /**
      * The composition the editor preview plays. Same sequences, items, gains
@@ -67,17 +73,37 @@ public object CompositionFactory {
      * blend plain bitmaps onto SDR frames (HDR needs Android 14 gain-map
      * images). CompositionPlayer supports the OpenGL mode; it lacks only the
      * MediaCodec one.
+     *
+     * [transforms] holds one [LiveTransform] per video segment, in order.
+     * The player reads them on every frame, so the editor can move, scale,
+     * turn or crop a clip in the real render without a new composition.
+     * Without them, each segment's planned transform is used.
      */
-    public fun forPreview(plan: ExportPlan, context: Context): Composition =
-        build(plan, context, toneMapHdr = plan.overlays.isNotEmpty() && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)
+    public fun forPreview(plan: ExportPlan, context: Context, transforms: List<LiveTransform>? = null): Composition {
+        require(transforms == null || transforms.size == plan.video.size) { "One transform per video segment" }
+        return build(
+            plan,
+            context,
+            toneMapHdr = plan.overlays.isNotEmpty() && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q,
+            transforms = transforms ?: fixedTransforms(plan),
+        )
+    }
 
-    private fun build(plan: ExportPlan, context: Context, toneMapHdr: Boolean): Composition {
+    private fun fixedTransforms(plan: ExportPlan): List<LiveTransform> = plan.video.map { LiveTransform(it.transform) }
+
+    private fun build(plan: ExportPlan, context: Context, toneMapHdr: Boolean, transforms: List<LiveTransform>): Composition {
         val sequences = mutableListOf<EditedMediaItemSequence>()
         if (plan.video.isNotEmpty()) {
             val fps = plan.settings.outputFps
             val trackTypes = if (plan.includeClipAudio) setOf(C.TRACK_TYPE_AUDIO, C.TRACK_TYPE_VIDEO) else setOf(C.TRACK_TYPE_VIDEO)
+            val width = plan.settings.widthPx
+            val height = plan.settings.heightPx
             sequences += EditedMediaItemSequence.Builder(trackTypes)
-                .addItems(plan.video.map { videoItem(it, fps, keepAudio = plan.includeClipAudio) })
+                .addItems(
+                    plan.video.mapIndexed { index, segment ->
+                        videoItem(segment, fps, keepAudio = plan.includeClipAudio, placement = ClipTransformEffects.create(transforms[index], width, height))
+                    },
+                )
                 .build()
         }
         plan.audioTracks.forEach { track ->
@@ -106,7 +132,7 @@ public object CompositionFactory {
         return builder.build()
     }
 
-    private fun videoItem(segment: VideoSegment, fps: Int, keepAudio: Boolean): EditedMediaItem =
+    private fun videoItem(segment: VideoSegment, fps: Int, keepAudio: Boolean, placement: List<Effect>): EditedMediaItem =
         when (segment.kind) {
             MediaKind.IMAGE -> {
                 // Images need a duration and a frame rate. The image duration is in ms, so the exact µs length is set too.
@@ -117,6 +143,7 @@ public object CompositionFactory {
                 EditedMediaItem.Builder(mediaItem)
                     .setDurationUs(segment.durationUs)
                     .setFrameRate(fps)
+                    .setEffects(Effects(emptyList(), placement))
                     .build()
             }
             else -> {
@@ -126,7 +153,7 @@ public object CompositionFactory {
                     // A maximum for video: faster sources drop frames, slower ones are kept as they are.
                     .setFrameRate(fps)
                     .setRemoveAudio(!keepAudio || gain == null)
-                    .setEffects(Effects(if (gain != null) audioChain(gain) else emptyList(), emptyList()))
+                    .setEffects(Effects(if (gain != null) audioChain(gain) else emptyList(), placement))
                     .build()
             }
         }

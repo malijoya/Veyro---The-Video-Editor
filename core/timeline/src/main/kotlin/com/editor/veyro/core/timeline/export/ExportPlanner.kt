@@ -15,7 +15,8 @@ import kotlin.math.roundToInt
  * Turns a timeline into an [ExportPlan]. Pure and platform-independent.
  *
  * What is rendered:
- * - The main track, in order, with each clip's exact source range. Video
+ * - The main track, in order, with each clip's exact source range and its
+ *   transform (position, scale, rotation, anchor, crop, opacity). Video
  *   clips keep their own sound, with the clip's and the track's volume,
  *   mute and fades. Photos are silent.
  * - Every audio track (music, voiceover), each with its gaps, mixed under
@@ -175,6 +176,9 @@ public object ExportPlanner {
                 durationUs = v.clip.durationUs,
                 sourceDurationUs = sourceLength(v.ref, v.clip.sourceOutUs),
                 audio = v.envelope?.let { SegmentGain(it, v.clip.startUs, headroom) },
+                transform = v.clip.transform,
+                sourceWidthPx = v.ref.displayWidthPx,
+                sourceHeightPx = v.ref.displayHeightPx,
             )
         }
         val audio = pendingTracks.map { pieces ->

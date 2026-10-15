@@ -209,7 +209,7 @@ class ProjectDocumentMigrationTest {
     fun `text and stickers round-trip in v6 with every style and placement property`() {
         val project = overlayProject()
         val json = ProjectDocumentCodec.encode(project)
-        assertTrue(json.contains("\"schemaVersion\":6"))
+        assertTrue(json.contains("\"schemaVersion\":$CURRENT_SCHEMA_VERSION"))
         assertTrue(json.contains("\"kind\":\"overlay\""))
         assertTrue(json.contains("\"font\":\"handwriting\""))
         assertTrue(json.contains("\"color\":\"#CCFF8800\""))

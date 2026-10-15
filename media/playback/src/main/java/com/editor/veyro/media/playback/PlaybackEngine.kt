@@ -56,6 +56,15 @@ public interface PlaybackEngine {
     public fun loadTimeline(plan: ExportPlan, startPositionMs: Long) {
         throw UnsupportedOperationException("${javaClass.simpleName} can't play timelines")
     }
+
+    /**
+     * Shows [plan] instead of the loaded timeline without reloading, when
+     * the two differ only in ways the engine can change on the fly (clip
+     * transforms). Position and play state stay as they are. Returns false
+     * when it can't, and the caller then loads [plan] normally.
+     */
+    public fun updateInPlace(plan: ExportPlan): Boolean = false
+
     public fun play()
     public fun pause()
     public fun seekTo(itemIndex: Int, positionMs: Long)

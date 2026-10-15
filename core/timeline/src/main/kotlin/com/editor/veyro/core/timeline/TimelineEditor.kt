@@ -43,6 +43,7 @@ public object TimelineEditor {
             is EditCommand.AddOverlay -> addOverlay(timeline, command, context)
             is EditCommand.SetOverlay -> setOverlay(timeline, command)
             is EditCommand.ArrangeLayer -> arrangeLayer(timeline, command)
+            is EditCommand.SetClipTransform -> setClipTransform(timeline, command, context)
         }
         return if (result is EditResult.Applied) result.copy(timeline = withoutEmptyOverlayTracks(result.timeline)) else result
     }
@@ -121,6 +122,7 @@ public object TimelineEditor {
             effects = clip.effects, // Both parts keep the clip's effects.
             audio = clip.audio.copy(fadeInUs = 0),
             overlay = clip.overlay, // Both parts show the same text or sticker.
+            transform = clip.transform, // And sit in the same place.
         )
         val clips = track.clips.toMutableList().apply {
             set(index, left)
@@ -259,6 +261,16 @@ public object TimelineEditor {
             else -> insertTrack(timeline, clip, at = timeline.mainTrack?.let { timeline.tracks.indexOf(it) } ?: 0)
         }
         return EditResult.Applied(placed, clip.id)
+    }
+
+    private fun setClipTransform(timeline: Timeline, command: EditCommand.SetClipTransform, context: EditContext): EditResult {
+        val located = locate(timeline, command.clipId) ?: return EditResult.Rejected(EditRejection.CLIP_NOT_FOUND)
+        val (track, index, clip) = located
+        if (track.kind != TrackKind.VIDEO) return EditResult.Rejected(EditRejection.NOT_A_PICTURE)
+        val bounds = boundsOf(clip, context) ?: return EditResult.Rejected(EditRejection.MEDIA_NOT_FOUND)
+        if (bounds.kind == MediaKind.AUDIO) return EditResult.Rejected(EditRejection.NOT_A_PICTURE)
+        if (clip.transform == command.transform) return EditResult.Rejected(EditRejection.NO_CHANGE)
+        return replaceClip(timeline, track, index, clip.copy(transform = command.transform))
     }
 
     private fun setOverlay(timeline: Timeline, command: EditCommand.SetOverlay): EditResult {

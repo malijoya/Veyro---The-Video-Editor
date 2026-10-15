@@ -30,6 +30,9 @@ import com.editor.veyro.core.model.project.AudioTrackInfo
 import com.editor.veyro.core.model.overlay.OverlayContent
 import com.editor.veyro.core.model.overlay.OverlayTransform
 import com.editor.veyro.core.timeline.LayerMove
+import com.editor.veyro.core.model.transform.ClipTransform
+import com.editor.veyro.core.model.transform.CropRect
+import com.editor.veyro.core.model.transform.FitMode
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
@@ -81,6 +84,17 @@ class EditorViewModelTest {
         override fun loadTimeline(plan: ExportPlan, startPositionMs: Long) {
             timelines += plan
             timelineStarts += startPositionMs
+        }
+
+        /** Whether this engine applies transform-only changes in place, as the composition engine does. */
+        var inPlace = false
+
+        /** Plans applied in place, without a reload. */
+        val inPlaceUpdates = mutableListOf<ExportPlan>()
+        override fun updateInPlace(plan: ExportPlan): Boolean {
+            if (!inPlace) return false
+            inPlaceUpdates += plan
+            return true
         }
         override fun play() {
             playWhenReady = true
@@ -657,6 +671,105 @@ class EditorViewModelTest {
         assertEquals(3, vm.ready().overlays.size)
         assertEquals(vm.ready().overlays.last().clipId, copy.clipId) // The copy is on top, and selected.
         assertEquals(over.overlay.transform.centerX + 0.03f, copy.overlay.transform.centerX, 0.0001f)
+    }
+
+
+    // ---------------- Clip transforms ----------------
+
+    @Test
+    fun `main-track pictures are listed with their upright size and transform`() = runTest {
+        val portrait = media("phone", MediaKind.VIDEO).copy(rotationDegrees = 90)
+        val vm = viewModel(FakeRepository(project(portrait, media("img", MediaKind.IMAGE), media("song", MediaKind.AUDIO))))
+        val pictures = vm.ready().pictures
+        assertEquals(listOf(ClipId("clip-phone"), ClipId("clip-img")), pictures.map { it.clipId })
+        assertEquals(1_080 to 1_920, pictures[0].sourceWidthPx to pictures[0].sourceHeightPx)
+        assertEquals(1_920 to 1_080, pictures[1].sourceWidthPx to pictures[1].sourceHeightPx)
+        assertTrue(pictures.all { it.transform.isDefault })
+        assertNull(vm.ready().selectedPicture)
+        vm.selectClip(ClipId("clip-img"))
+        assertEquals(ClipId("clip-img"), vm.ready().selectedPicture?.clipId)
+    }
+
+    @Test
+    fun `a transform gesture renders live without a reload and saves as one undo step`() = runTest {
+        val repository = FakeRepository(project(media("v", MediaKind.VIDEO, 6_000_000), media("img", MediaKind.IMAGE)))
+        val vm = viewModel(repository)
+        vm.controller.attach()
+        val engine = engines.single()
+        engine.inPlace = true
+        val clip = ClipId("clip-v")
+        vm.selectClip(clip)
+        val saves = repository.timelineSaves
+        val loads = engine.timelines.size
+
+        // A pinch and twist: many changes, each rendered by the player in place.
+        val steps = (1..5).map { ClipTransform(scale = 1f + it * 0.1f, rotationDegrees = it * 10f) }
+        steps.forEach { vm.previewTransform(clip, it) }
+        assertEquals(steps.last(), vm.ready().selectedPicture!!.transform)
+        assertEquals(steps.last(), engine.inPlaceUpdates.last().video.first().transform)
+        assertEquals(ClipTransform.DEFAULT, engine.inPlaceUpdates.last().video[1].transform)
+        assertEquals(loads, engine.timelines.size) // No reload.
+        assertEquals(saves, repository.timelineSaves) // Nothing saved yet.
+
+        vm.commitTransform()
+        assertEquals(saves + 1, repository.timelineSaves)
+        assertEquals(steps.last(), repository.saved.value.single().timeline!!.findClip(clip)!!.transform)
+        assertEquals(loads, engine.timelines.size) // Saving the same transform doesn't reload either.
+
+        vm.undo()
+        assertEquals(ClipTransform.DEFAULT, repository.saved.value.single().timeline!!.findClip(clip)!!.transform)
+        assertEquals(ClipTransform.DEFAULT, engine.inPlaceUpdates.last().video.first().transform)
+        vm.redo()
+        assertEquals(steps.last(), vm.ready().selectedPicture!!.transform)
+    }
+
+    @Test
+    fun `without in-place support the preview reloads with the new transform`() = runTest {
+        val vm = viewModel(FakeRepository(project(media("v", MediaKind.VIDEO))))
+        vm.controller.attach()
+        val engine = engines.single()
+        val moved = ClipTransform(positionX = 0.2f, crop = CropRect(0.1f, 0.1f, 0.9f, 0.9f))
+        vm.previewTransform(ClipId("clip-v"), moved)
+        assertEquals(moved, engine.timelines.last().video.single().transform)
+    }
+
+    @Test
+    fun `fit, fill and reset save at once`() = runTest {
+        val repository = FakeRepository(project(media("v", MediaKind.VIDEO)))
+        val vm = viewModel(repository)
+        val clip = ClipId("clip-v")
+        fun saved() = repository.saved.value.single().timeline!!.findClip(clip)!!.transform
+
+        vm.setTransform(clip, ClipTransform(positionX = 0.1f, scale = 3f))
+        vm.fitTransform(clip, FitMode.FILL)
+        assertEquals(FitMode.FILL, saved().fit)
+        assertEquals(1f, saved().scale, 1e-5f)
+        assertEquals(0.5f, saved().positionX)
+
+        // A landscape clip turned on its side in the default portrait canvas: fitted, it now fills the width,
+        // 1920/1080 times its upright fitted size.
+        vm.setTransform(clip, saved().with(rotationDegrees = 90f, fit = FitMode.FIT))
+        vm.fitTransform(clip, FitMode.FIT)
+        assertEquals(90f, saved().rotationDegrees)
+        assertEquals(1_920f / 1_080f, saved().scale, 1e-3f)
+
+        vm.resetTransform(clip)
+        assertTrue(saved().isDefault)
+        assertTrue(vm.ready().canUndo)
+    }
+
+    @Test
+    fun `transforms only apply to pictures, and selecting something else saves one in progress`() = runTest {
+        val repository = FakeRepository(project(media("v", MediaKind.VIDEO), media("img", MediaKind.IMAGE), media("song", MediaKind.AUDIO)))
+        val vm = viewModel(repository)
+        vm.previewTransform(ClipId("clip-song"), ClipTransform(scale = 2f))
+        assertTrue(vm.ready().pictures.all { it.transform.isDefault })
+
+        val moved = ClipTransform(positionY = 0.8f)
+        vm.selectClip(ClipId("clip-v"))
+        vm.previewTransform(ClipId("clip-v"), moved)
+        vm.selectClip(ClipId("clip-img"))
+        assertEquals(moved, repository.saved.value.single().timeline!!.findClip(ClipId("clip-v"))!!.transform)
     }
 
     private companion object {

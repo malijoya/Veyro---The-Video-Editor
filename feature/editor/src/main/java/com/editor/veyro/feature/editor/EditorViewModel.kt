@@ -26,6 +26,9 @@ import com.editor.veyro.core.model.timeline.DefaultArrangement
 import com.editor.veyro.core.model.timeline.Timeline
 import com.editor.veyro.core.model.timeline.TrackId
 import com.editor.veyro.core.model.timeline.TrackKind
+import com.editor.veyro.core.model.transform.ClipPlacement
+import com.editor.veyro.core.model.transform.ClipTransform
+import com.editor.veyro.core.model.transform.FitMode
 import com.editor.veyro.core.timeline.EditCommand
 import com.editor.veyro.core.timeline.EditContext
 import com.editor.veyro.core.timeline.EditHistory
@@ -115,6 +118,31 @@ public data class OverlayUi(
     public operator fun contains(timeUs: Long): Boolean = timeUs >= startUs && timeUs < endUs
 }
 
+/**
+ * A video or photo on the main track, as the preview canvas places and edits
+ * it.
+ *
+ * @property transform the transform as shown: an unsaved change in progress
+ *   (a drag, a slider) replaces the saved one here.
+ * @property sourceWidthPx the source's upright width (0 if unknown), for the
+ *   handles; the render measures the decoded frame itself.
+ */
+@Immutable
+public data class PictureUi(
+    val clipId: ClipId,
+    val startUs: Long,
+    val endUs: Long,
+    val transform: ClipTransform,
+    val sourceWidthPx: Int,
+    val sourceHeightPx: Int,
+) {
+    public operator fun contains(timeUs: Long): Boolean = timeUs >= startUs && timeUs < endUs
+
+    /** The picture's layout on a [canvasWidthPx] x [canvasHeightPx] canvas. */
+    public fun placement(canvasWidthPx: Int, canvasHeightPx: Int, transform: ClipTransform = this.transform): ClipPlacement =
+        ClipPlacement(transform, sourceWidthPx, sourceHeightPx, canvasWidthPx, canvasHeightPx)
+}
+
 /** An image of the project offered as a sticker. */
 @Immutable
 public data class StickerChoice(val mediaId: MediaId, val uri: String, val title: String)
@@ -175,8 +203,13 @@ public sealed interface EditorUiState {
         val canvasHeightPx: Int = ProjectSettings.DEFAULT.canvasHeightPx,
         /** The project's images, offered as stickers. */
         val stickerChoices: List<StickerChoice> = emptyList(),
+        /** The main track's videos and photos, in order, with unsaved transform changes applied. */
+        val pictures: List<PictureUi> = emptyList(),
     ) : EditorUiState {
         val selectedTrack: TimelineTrackUi? get() = selectedClip?.let { clip -> tracks.firstOrNull { it.id == clip.trackId } }
+
+        /** The selected picture, if the selection is one. The preview canvas draws its frame and handles. */
+        val selectedPicture: PictureUi? get() = selectedClip?.let { clip -> pictures.firstOrNull { it.clipId == clip.id } }
 
         /** The selected overlay, if the selection is one. The preview canvas draws it with handles. */
         val selectedOverlay: OverlayUi? get() = selectedClip?.let { clip -> overlays.firstOrNull { it.clipId == clip.id } }
@@ -231,6 +264,10 @@ public class EditorViewModel(
     private data class OverlayDraft(val clipId: ClipId, val overlay: Overlay)
     private val overlayDraft = MutableStateFlow<OverlayDraft?>(null)
 
+    /** A clip transform change in progress, shown (in the real render) before it's saved. */
+    private data class TransformDraft(val clipId: ClipId, val transform: ClipTransform)
+    private val transformDraft = MutableStateFlow<TransformDraft?>(null)
+
     private val history = MutableStateFlow(EditHistory())
     private val message = MutableStateFlow<EditorMessage?>(null)
 
@@ -250,11 +287,17 @@ public class EditorViewModel(
     /** UI state plus the matching preview plan. The plan goes to the controller, not the UI. */
     private class Built(val state: EditorUiState, val plan: PreviewPlan?, val persisted: Timeline? = null)
 
-    private val projectAndSelection = combine(repository.project(projectId), selectedId, analysed, overlayDraft) { project, selected, peaks, overlay ->
-        ProjectView(project, selected, peaks, overlay)
+    private val projectAndSelection = combine(repository.project(projectId), selectedId, analysed, overlayDraft, transformDraft) { project, selected, peaks, overlay, transform ->
+        ProjectView(project, selected, peaks, overlay, transform)
     }
 
-    private data class ProjectView(val project: Project?, val selected: String?, val waveforms: Map<MediaId, Waveform>, val overlayDraft: OverlayDraft?)
+    private data class ProjectView(
+        val project: Project?,
+        val selected: String?,
+        val waveforms: Map<MediaId, Waveform>,
+        val overlayDraft: OverlayDraft?,
+        val transformDraft: TransformDraft?,
+    )
     private val editingState = combine(draft, pendingSave, history, message, autosave.status) { d, p, h, m, a ->
         EditingState(d, p, h, m, a)
     }
@@ -267,7 +310,7 @@ public class EditorViewModel(
         val autosave: ProjectAutosave.Status,
     )
 
-    public val uiState: StateFlow<EditorUiState> = combine(projectAndSelection, editingState) { (project, selected, peaks, overlayEdit), editing ->
+    public val uiState: StateFlow<EditorUiState> = combine(projectAndSelection, editingState) { (project, selected, peaks, overlayEdit, transformEdit), editing ->
         latestProject = project
         if (project == null) {
             Built(EditorUiState.NotFound, null)
@@ -279,7 +322,9 @@ public class EditorViewModel(
             val mediaById = project.media.associateBy { it.id }
             // The selected overlay is drawn by the editing canvas (live, with handles), so the player leaves it out.
             val editedOverlay = selected?.let(::ClipId)?.takeIf { shown.findClip(it)?.overlay != null }
-            val preview = previewPlanFor(saved, project, peaks, hiddenOverlay = editedOverlay)
+            // A transform being edited is rendered for real: the player applies it in place, without reloading.
+            val rendered = transformEdit?.let { saved.withTransform(it.clipId, it.transform) } ?: saved
+            val preview = previewPlanFor(rendered, project, peaks, hiddenOverlay = editedOverlay)
             val tracks = tracksUi(shown, mediaById, peaks)
             Built(
                 EditorUiState.Ready(
@@ -300,6 +345,7 @@ public class EditorViewModel(
                     stickerChoices = project.media.filter { it.kind == MediaKind.IMAGE }.map {
                         StickerChoice(it.id, it.uri, it.displayName.orEmpty())
                     },
+                    pictures = picturesUi(transformEdit?.let { shown.withTransform(it.clipId, it.transform) } ?: shown, mediaById),
                     saveStatus = when {
                         editing.autosave is ProjectAutosave.Status.Failed -> SaveStatus.FAILED
                         editing.autosave is ProjectAutosave.Status.Saving -> SaveStatus.SAVING
@@ -327,8 +373,9 @@ public class EditorViewModel(
     // ---- Selection ----
 
     public fun selectClip(id: ClipId?) {
-        // Selecting something else saves an overlay change still in progress.
+        // Selecting something else saves an overlay or transform change still in progress.
         if (overlayDraft.value?.clipId != id) commitOverlay()
+        if (transformDraft.value?.clipId != id) commitTransform()
         savedState[KEY_SELECTED] = id?.value
     }
 
@@ -361,12 +408,14 @@ public class EditorViewModel(
 
     public fun undo() {
         commitOverlay()
+        commitTransform()
         val current = currentTimeline() ?: return
         onHistoryStep(history.value.undo(current))
     }
 
     public fun redo() {
         commitOverlay()
+        commitTransform()
         val current = currentTimeline() ?: return
         onHistoryStep(history.value.redo(current))
     }
@@ -505,6 +554,63 @@ public class EditorViewModel(
         execute(EditCommand.AddOverlay(overlay.copy(transform = nudged), clip.mediaId, clip.startUs, clip.durationUs))
     }
 
+    // ---- Clip transforms ----
+
+    /**
+     * Shows [transform] for [clipId] at once, without saving: for changes
+     * that arrive many times a second (gestures on the preview, sliders).
+     * The player renders it in place. [commitTransform] saves the latest one
+     * as a single undo step.
+     */
+    public fun previewTransform(clipId: ClipId, transform: ClipTransform) {
+        val current = transformDraft.value
+        if (current != null && current.clipId != clipId) commitTransform()
+        if (currentTimeline()?.trackOf(clipId)?.kind != TrackKind.VIDEO) return
+        transformDraft.value = TransformDraft(clipId, transform)
+    }
+
+    /** Saves the change shown by [previewTransform], as one undoable edit. */
+    public fun commitTransform() {
+        val pending = transformDraft.value ?: return
+        transformDraft.value = null
+        execute(EditCommand.SetClipTransform(pending.clipId, pending.transform))
+    }
+
+    /** Drops the change shown by [previewTransform]. */
+    public fun discardTransformDraft() {
+        transformDraft.value = null
+    }
+
+    /** Changes [clipId]'s transform at once, as one undoable edit (a button, a preset). */
+    public fun setTransform(clipId: ClipId, transform: ClipTransform) {
+        transformDraft.value = null
+        execute(EditCommand.SetClipTransform(clipId, transform))
+    }
+
+    /** Puts the clip back as it was imported: whole picture, fitted, centred, upright, opaque. */
+    public fun resetTransform(clipId: ClipId) {
+        setTransform(clipId, ClipTransform.DEFAULT)
+    }
+
+    /**
+     * Centres the clip and sizes it to fit inside the canvas, or to fill it,
+     * at its current rotation and crop.
+     */
+    public fun fitTransform(clipId: ClipId, mode: FitMode) {
+        val picture = pictureFor(clipId) ?: return
+        val settings = latestProject?.settings ?: return
+        setTransform(clipId, picture.placement(settings.canvasWidthPx, settings.canvasHeightPx).fitted(mode))
+    }
+
+    /** [clipId] as the canvas places it, with any change in progress. */
+    private fun pictureFor(clipId: ClipId): PictureUi? {
+        val project = latestProject ?: return null
+        val timeline = currentTimeline() ?: return null
+        val draft = transformDraft.value?.takeIf { it.clipId == clipId }
+        val shown = draft?.let { timeline.withTransform(it.clipId, it.transform) } ?: timeline
+        return picturesUi(shown, project.media.associateBy { it.id }, allVideoTracks = true).firstOrNull { it.clipId == clipId }
+    }
+
     /** Starts measuring every audio-bearing file once. Results arrive through [analysed]. */
     private fun requestWaveforms(project: Project) {
         project.media.filter { it.hasAudio && it.id !in analysisRequested }.forEach { media ->
@@ -535,6 +641,7 @@ public class EditorViewModel(
     /** Starts editing [clipId] with [handle]. It also selects the clip. */
     public fun beginDrag(clipId: ClipId, handle: DragHandle) {
         commitOverlay()
+        commitTransform()
         val timeline = currentTimeline() ?: return
         val clip = timeline.findClip(clipId) ?: return
         selectClip(clipId)
@@ -622,8 +729,9 @@ public class EditorViewModel(
     }
 
     private fun execute(command: EditCommand, extraMedia: List<MediaRef> = emptyList()) {
-        // Any other edit first saves an overlay change still in progress, so it isn't lost or applied to the wrong state.
+        // Any other edit first saves an overlay or transform change still in progress, so it isn't lost or applied to the wrong state.
         if (command !is EditCommand.SetOverlay) commitOverlay()
+        if (command !is EditCommand.SetClipTransform) commitTransform()
         val timeline = currentTimeline() ?: return
         val context = editContext(extraMedia) ?: return
         when (val result = TimelineEditor.apply(timeline, command, context)) {
@@ -699,6 +807,27 @@ public class EditorViewModel(
                 },
             )
         }
+
+    /**
+     * The main track's videos and photos (or, with [allVideoTracks], those of
+     * every video track), in timeline order.
+     */
+    private fun picturesUi(timeline: Timeline, mediaById: Map<MediaId, MediaRef>, allVideoTracks: Boolean = false): List<PictureUi> {
+        val tracks = if (allVideoTracks) timeline.tracks.filter { it.kind == TrackKind.VIDEO } else listOfNotNull(timeline.mainTrack)
+        return tracks.flatMap { track ->
+            track.clips.mapNotNull { clip ->
+                val media = mediaById[clip.mediaId ?: return@mapNotNull null] ?: return@mapNotNull null
+                if (media.kind == MediaKind.AUDIO) return@mapNotNull null
+                PictureUi(clip.id, clip.startUs, clip.endUs, clip.transform, media.displayWidthPx, media.displayHeightPx)
+            }
+        }
+    }
+
+    /** [timeline] with [clipId]'s transform replaced, if it is on a video track. */
+    private fun Timeline.withTransform(clipId: ClipId, transform: ClipTransform): Timeline {
+        val track = trackOf(clipId)?.takeIf { it.kind == TrackKind.VIDEO } ?: return this
+        return withTrack(track.copy(clips = track.clips.map { if (it.id == clipId) it.copy(transform = transform) else it }))
+    }
 
     /** Overlays bottom layer first (the reverse of the track list), with the change in progress applied. */
     private fun overlaysUi(timeline: Timeline, mediaById: Map<MediaId, MediaRef>, edit: OverlayDraft?): List<OverlayUi> =

@@ -7,6 +7,7 @@ import com.editor.veyro.core.model.overlay.Overlay
 import com.editor.veyro.core.model.overlay.OverlayContent
 import com.editor.veyro.core.model.project.MediaId
 import com.editor.veyro.core.model.time.FrameRate
+import com.editor.veyro.core.model.transform.ClipTransform
 
 /** Stable identifier of a clip. */
 @JvmInline
@@ -69,6 +70,12 @@ public data class Clip(
     val audio: ClipAudio = ClipAudio.DEFAULT,
     /** The text or sticker this clip shows, on overlay tracks. Null on every other track. */
     val overlay: Overlay? = null,
+    /**
+     * Where and how the picture sits on the canvas (position, scale,
+     * rotation, anchor, crop, opacity). Only clips on video tracks have
+     * anything but the default; overlays carry their own placement.
+     */
+    val transform: ClipTransform = ClipTransform.DEFAULT,
 ) {
     init {
         require((mediaId == null) == (overlay?.content is OverlayContent.Text)) {
@@ -129,6 +136,7 @@ public data class Track(
         // Overlay tracks hold only overlays, and overlays live only there.
         clips.forEach { clip ->
             require((clip.overlay != null) == (kind == TrackKind.OVERLAY)) { "Clip ${clip.id.value} doesn't belong on a ${kind.name} track" }
+            require(kind == TrackKind.VIDEO || clip.transform.isDefault) { "Clip ${clip.id.value}: only pictures on video tracks have a transform" }
         }
     }
 

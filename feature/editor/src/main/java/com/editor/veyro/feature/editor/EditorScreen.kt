@@ -5,11 +5,17 @@ import com.editor.veyro.core.model.audio.ClipAudio
 import com.editor.veyro.core.model.overlay.Overlay
 import com.editor.veyro.core.model.overlay.OverlayContent
 import com.editor.veyro.core.model.project.MediaId
+import com.editor.veyro.core.model.transform.ClipTransform
+import com.editor.veyro.core.model.transform.FitMode
 import com.editor.veyro.core.timeline.LayerMove
 import com.editor.veyro.feature.editor.overlay.OverlayActions
 import com.editor.veyro.feature.editor.overlay.OverlayCanvas
 import com.editor.veyro.feature.editor.overlay.OverlayControls
+import com.editor.veyro.feature.editor.overlay.PictureEditing
 import com.editor.veyro.feature.editor.overlay.StickerSheet
+import com.editor.veyro.feature.editor.transform.TransformActions
+import com.editor.veyro.feature.editor.transform.TransformControls
+import com.editor.veyro.feature.editor.transform.TransformTab
 import android.os.SystemClock
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
@@ -165,6 +171,11 @@ public fun EditorRoute(viewModel: EditorViewModel, onBack: () -> Unit, onExport:
             onSetOverlay = viewModel::setOverlay,
             onArrangeLayer = viewModel::arrangeLayer,
             onDuplicateOverlay = viewModel::duplicateOverlay,
+            onPreviewTransform = viewModel::previewTransform,
+            onCommitTransform = viewModel::commitTransform,
+            onSetTransform = viewModel::setTransform,
+            onFitTransform = viewModel::fitTransform,
+            onResetTransform = viewModel::resetTransform,
         ),
     )
 }
@@ -193,6 +204,11 @@ internal class EditActions(
     val onSetOverlay: (ClipId, Overlay) -> Unit = { _, _ -> },
     val onArrangeLayer: (ClipId, LayerMove) -> Unit = { _, _ -> },
     val onDuplicateOverlay: (ClipId) -> Unit = {},
+    val onPreviewTransform: (ClipId, ClipTransform) -> Unit = { _, _ -> },
+    val onCommitTransform: () -> Unit = {},
+    val onSetTransform: (ClipId, ClipTransform) -> Unit = { _, _ -> },
+    val onFitTransform: (ClipId, FitMode) -> Unit = { _, _ -> },
+    val onResetTransform: (ClipId) -> Unit = {},
 )
 
 /**
@@ -362,6 +378,12 @@ private fun EditorContent(
     }
     val overlayDescription = selectedOverlay?.let { overlayLabel(it.overlay) }.orEmpty()
 
+    // The transform panel's tab, or null while it is closed. The crop tab switches the preview to crop editing.
+    var transformTab by rememberSaveable { mutableStateOf<TransformTab?>(null) }
+    val selectedPicture = state.selectedPicture
+    LaunchedEffect(selectedPicture == null) { if (selectedPicture == null) transformTab = null }
+    val pictureDescription = stringResource(if (transformTab == TransformTab.CROP) R.string.transform_a11y_cropping else R.string.transform_a11y_selected)
+
     Column(Modifier.fillMaxSize()) {
         Box(
             contentAlignment = Alignment.Center,
@@ -395,6 +417,14 @@ private fun EditorContent(
                         onCommit = editActions.onCommitOverlay,
                         onEditText = { id -> focusTextOf = id },
                         modifier = Modifier.matchParentSize(),
+                        pictureEditing = PictureEditing(
+                            pictures = state.pictures,
+                            selected = selectedPicture,
+                            cropMode = transformTab == TransformTab.CROP,
+                            description = pictureDescription,
+                            onChange = editActions.onPreviewTransform,
+                            onCommit = editActions.onCommitTransform,
+                        ),
                     )
                 }
             }
@@ -442,6 +472,8 @@ private fun EditorContent(
             actions = editActions,
             focusTextOf = focusTextOf,
             onTextFocused = { focusTextOf = null },
+            transformTab = transformTab,
+            onTransformTab = { transformTab = it },
         )
     }
 
@@ -629,10 +661,13 @@ private fun SelectionBar(
     actions: EditActions,
     focusTextOf: ClipId? = null,
     onTextFocused: () -> Unit = {},
+    transformTab: TransformTab? = null,
+    onTransformTab: (TransformTab?) -> Unit = {},
 ) {
     val clip = state.selectedClip
     val track = state.selectedTrack
     val overlay = state.selectedOverlay
+    val picture = state.selectedPicture
     // The sound panel opens on demand, so the preview keeps its room on small screens.
     var soundOpen by rememberSaveable { mutableStateOf(false) }
     Surface(color = MaterialTheme.colorScheme.surfaceContainer, modifier = Modifier.fillMaxWidth()) {
@@ -658,8 +693,25 @@ private fun SelectionBar(
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
+                    if (picture != null) {
+                        TextButton(
+                            onClick = {
+                                // One panel at a time keeps the preview its room.
+                                if (transformTab == null) soundOpen = false
+                                actions.onCommitTransform()
+                                onTransformTab(if (transformTab == null) TransformTab.ADJUST else null)
+                            },
+                        ) {
+                            Text(stringResource(if (transformTab != null) R.string.transform_hide else R.string.transform_open))
+                        }
+                    }
                     if (clip.mediaKind != MediaKind.IMAGE && overlay == null) {
-                        TextButton(onClick = { soundOpen = !soundOpen }) {
+                        TextButton(
+                            onClick = {
+                                if (!soundOpen) onTransformTab(null)
+                                soundOpen = !soundOpen
+                            },
+                        ) {
                             Text(stringResource(if (soundOpen) R.string.editor_sound_hide else R.string.editor_sound))
                         }
                     }
@@ -684,6 +736,23 @@ private fun SelectionBar(
                         ),
                     )
                 }
+                if (picture != null && transformTab != null) {
+                    TransformControls(
+                        picture = picture,
+                        canvasWidthPx = state.canvasWidthPx,
+                        canvasHeightPx = state.canvasHeightPx,
+                        tab = transformTab,
+                        onTabChange = onTransformTab,
+                        enabled = !state.isDragging,
+                        actions = TransformActions(
+                            onPreview = { actions.onPreviewTransform(picture.clipId, it) },
+                            onCommit = actions.onCommitTransform,
+                            onSet = { actions.onSetTransform(picture.clipId, it) },
+                            onFit = { actions.onFitTransform(picture.clipId, it) },
+                            onReset = { actions.onResetTransform(picture.clipId) },
+                        ),
+                    )
+                }
                 if (soundOpen && track != null && clip.mediaKind != MediaKind.IMAGE && overlay == null) {
                     AudioControls(
                         clip = clip,
@@ -696,7 +765,7 @@ private fun SelectionBar(
                     )
                 }
             }
-            if (!compact && overlay == null) {
+            if (!compact && overlay == null && transformTab == null) {
                 FlowRow(
                     horizontalArrangement = Arrangement.spacedBy(Spacing.sm),
                     verticalArrangement = Arrangement.spacedBy(Spacing.xs),

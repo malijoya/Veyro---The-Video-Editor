@@ -53,7 +53,7 @@ decision changes.
 | `:media:playback` | Android + Compose | exists | `PreviewPlan` (one asset, or a whole timeline's render plan), `PreviewController` (lifecycle, timing, errors), `PlaybackEngine` with `ExoPlaybackEngine` (single assets) and `CompositionPlaybackEngine` (the editor's timeline, every track mixed), preview composables. Holds the preview UI widgets because they bind directly to the Media3 `Player`. |
 | `:media:export` | Android | exists | `ExportPipeline` (render → verify → publish, the only path to a completed export), `CompositionFactory` (plan → Media3 `Composition`), `Media3VideoRenderer` (Transformer, real progress, cancel), `AndroidOutputVerifier` (MediaExtractor + frame decode), `AndroidExportPublisher` (MediaStore or SAF document). |
 | `:feature:export` | Android + Compose | exists | Export screen: size and frame-rate choice, destination, progress, cancel, completion and failure states. |
-| `:media:render` | Android | exists | `CompositionFactory`: the one translation of a render plan into a Media3 `Composition`, used by preview (`CompositionPlayer`) and export (Transformer). Per-item gain through Media3 `GainProcessor`. Overlays: `OverlayPainter` (the one drawing routine for text and stickers), `FontResolver` (family and glyph fallback), `StickerImages`, and `TimelineOverlay` (a Media3 `BitmapOverlay`). GL effects and transitions will live here too (M7+). |
+| `:media:render` | Android | exists | `CompositionFactory`: the one translation of a render plan into a Media3 `Composition`, used by preview (`CompositionPlayer`) and export (Transformer). Per-item gain through Media3 `GainProcessor`. Overlays: `OverlayPainter` (the one drawing routine for text and stickers), `FontResolver` (family and glyph fallback), `StickerImages`, and `TimelineOverlay` (a Media3 `BitmapOverlay`). Clip transforms: `ClipTransformEffects` (crop, placement and opacity stages, read live from a `LiveTransform`). GL effects and transitions will live here too (M7+). |
 | `:feature:editor` | Android + Compose | exists | Editor screen: preview, timeline UI (ruler, tracks, filmstrips, playhead, zoom), selection, playhead/player sync. |
 
 Modules are created in the milestone that first gives them real code, never
@@ -580,6 +580,77 @@ Clip.overlay (core:model) ─► ExportPlanner ─► ExportPlan.overlays (Overl
   missing file; during rendering, an unreadable one fails the export
   instead of being left out.
 
+## Clip transforms (M8)
+
+```
+Clip.transform (core:model) ─► ExportPlanner ─► VideoSegment.transform
+                                                   │
+          CompositionFactory: per item  Crop ─► Placement ─► Opacity   (one shader pass, preview and export)
+                                                   │
+                        ClipPlacement (core:model) ◄─ editor handles, gestures, panel
+```
+
+- **Coordinate system.** Everything stored is a fraction, never a pixel
+  of any screen or output:
+  - *Canvas*: the output frame, (0, 0) top-left to (1, 1) bottom-right, y
+    down. Position is where the anchor sits, in these units.
+  - *Source*: the upright source frame (rotation metadata or EXIF applied),
+    same convention. The crop is a rectangle in it.
+  - *Picture*: the cropped part of the source, same convention. The anchor
+    (pivot) is a point in it.
+  - Rotation is clockwise degrees in (-180, 180], about the anchor, done in
+    canvas pixels so nothing shears on a non-square canvas.
+  - Size: a `FitMode` base (fit inside the canvas, or fill it), times
+    `scale`. Both depend only on shapes, so a layout at 1280x720 is exactly
+    half of the one at 2560x1440, and a proxy of another resolution lands
+    in the same place.
+  - Screen coordinates exist only inside the editor's gesture code, which
+    divides by the canvas's size on screen at once.
+- **One geometry.** `ClipPlacement` lays a transform out on a canvas of a
+  given pixel size and produces both what the editor needs (corners, hit
+  testing, canvas/picture/source conversions, edits that keep the picture
+  still: `withAnchor`, `withCrop`, `fitted`) and the two OpenGL matrices the
+  renderer uses (`cropMatrix`, `placementMatrix`). JVM tests check that the
+  matrices map every source point exactly where the editor geometry says.
+- **Rendering.** Each picture item gets three per-item Media3 effects:
+  `CropStage` (maps the crop onto the frame; the shader clips the rest),
+  `PlacementStage` (outputs the canvas size, places the picture) and
+  `OpacityStage` (an `RgbMatrix` scaling colour, which is blending with the
+  black below the main track; encoders drop alpha). Media3 merges
+  consecutive matrix and colour effects into one `DefaultShaderProgram`, so
+  it is a single draw per frame. Checked in the 1.11.1 sources: the effects
+  receive upright frames in both Transformer and CompositionPlayer (the
+  decoder applies `KEY_ROTATION` and Media3 swaps the reported size;
+  images are decoded with their EXIF orientation), and `configure` passes
+  the decoded size, so the layout uses the real frame rather than stored
+  metadata.
+- **Live preview.** The preview composition reads each segment's transform
+  from a `LiveTransform` on every frame. When a new plan differs from the
+  loaded one only in transforms, `CompositionPlaybackEngine.updateInPlace`
+  writes the new values and, when paused, asks CompositionPlayer to redraw
+  the last frame (replayable frame cache, experimental). `PreviewController`
+  tries that before reloading. So a drag, pinch, twist or crop is shown by
+  the real renderer, at gesture rate, with no reload; any other edit still
+  reloads.
+- **Editing.** Drafts work like overlays: `previewTransform` (not saved,
+  rendered), `commitTransform` (one undo step), `setTransform` (buttons).
+  `SetClipTransform` is valid on video-track clips only. Split copies the
+  transform; trims and moves carry it.
+- **UI.** Tap the picture in the preview to select its clip (a first touch
+  only selects, so footage never moves by accident). Then drag to move,
+  pinch to scale, twist to rotate, or use the corner handle; moves snap to
+  the centre lines, rotation to right angles, scale to the fitted size. The
+  Transform panel has Fit, Fill and Reset, a Position tab (scale, rotation,
+  quarter turns, opacity, position), a Crop tab (free, original or preset
+  shapes; on the preview the whole source is outlined and the crop frame's
+  corners and inside are dragged, with the source held still), and an
+  Anchor tab (nine presets and sliders; moving the anchor never moves the
+  picture).
+- **Storage.** Schema v7: an optional `transform` object per clip; absent
+  means the default. Decoding is lenient (values clamped, crop edges
+  ordered, an unreadable shape lock dropped, transforms on non-video tracks
+  ignored).
+
 ## Export (M6)
 
 ```
@@ -605,8 +676,10 @@ Checked against the Media3 1.11.1 sources and the Transformer guides
   - Sequence 2 is the audio track, using `addGap` for silence.
   - Every audio item is converted to 16-bit stereo PCM. Transformer requires
     all audio in a composition to match in sample format and channel count.
-  - A composition-wide `Presentation.createForWidthAndHeight(...,
-    LAYOUT_SCALE_TO_FIT)` sets the size; different shapes get black bars.
+  - Every picture item carries its clip transform as per-item effects
+    (see "Clip transforms"), which output exactly the chosen size. A
+    composition-wide `Presentation.createForWidthAndHeight(...,
+    LAYOUT_SCALE_TO_FIT)` follows as a no-op safety net.
   - Output is H.264 and AAC in MP4. On Android 10+, HDR sources are
     tone-mapped to SDR so mixed HDR/SDR sequences can export.
 - **Threads:** a Transformer must be used from one Looper thread, and its
@@ -659,6 +732,12 @@ Checked against the Media3 1.11.1 sources and the Transformer guides
 | Audio-only projects | Blocked. | Output must have a video track. |
 | Transitions, crossfades | Not available. | No transition model yet; Media3 Compositions don't support crossfading video or audio tracks. |
 | Speed changes, keyframes | Not available. | Not in the timeline model yet. |
+| Animated transforms (keyframed position, scale, rotation, crop) | Not available. A transform holds for the whole clip. | The effects read a transform per frame already; keyframes need the model and editor. |
+| Flip / mirror, perspective, skew | Not available. | Not in `ClipTransform`. |
+| Background other than black (colour, blur) behind a moved or shrunk clip | Black. | Needs a background layer below the main track. |
+| Non-square pixels (anamorphic sources) | Laid out as if pixels were square. | Media3 reports the pixel aspect ratio but the placement ignores it. |
+| Transforms on extra video tracks | Stored and editable through the engine, but those tracks aren't rendered. | Picture-in-picture is not rendered yet. |
+| Live transform preview while paused | Redraws the paused frame through CompositionPlayer's replayable frame cache. | That API is experimental in Media3 1.11; if a redraw can't happen the change shows on the next frame or reload. |
 | Bitrate and codec choice (HEVC, AV1), HDR output | Not offered. H.264/AAC, encoder's default bitrate, SDR. | Picked for compatibility; Transformer may still fall back on devices that can't encode H.264 at the chosen size, and the completion screen shows the size actually written. |
 | More than 6 audio channels | Fails with a processing error. | Media3's default stereo down-mix covers 1–6 input channels. |
 | Clips over GIF or other multi-frame images | First frame only. | `DefaultAssetLoaderFactory` behaviour. |

@@ -83,6 +83,17 @@ class PreviewControllerTest {
             released = true
         }
 
+        /** Whether [updateInPlace] accepts plans (the composition engine does for transform-only changes). */
+        var acceptsInPlace = false
+        var inPlaceCount = 0
+
+        override fun updateInPlace(plan: com.editor.veyro.core.timeline.export.ExportPlan): Boolean {
+            if (!acceptsInPlace) return false
+            loadedTimeline = plan
+            inPlaceCount++
+            return true
+        }
+
         fun ready(durationMs: Long, video: Boolean = true) {
             status = EngineStatus.READY
             currentItemDurationMs = durationMs
@@ -342,5 +353,35 @@ class PreviewControllerTest {
         val loads = engine.loadCount
         controller.setPlan(timelinePlan(4_000_000), keepPosition = true)
         assertEquals(loads, engine.loadCount)
+    }
+
+    @Test
+    fun `changes the engine can apply in place keep playing without a reload`() = runTest {
+        val controller = controller()
+        controller.setPlan(timelinePlan(8_000_000))
+        controller.attach()
+        engine.ready(durationMs = 8_000)
+        controller.play()
+        controller.seekTo(3_000_000)
+        val loads = engine.loadCount
+        engine.acceptsInPlace = true
+
+        // An edit to the same timeline that the engine takes in place: no reload, still playing, same position.
+        val edited = timelinePlan(8_000_000, volume = 0.5f)
+        controller.setPlan(edited, keepPosition = true)
+        assertEquals(loads, engine.loadCount)
+        assertEquals(1, engine.inPlaceCount)
+        assertEquals(edited.render, engine.loadedTimeline)
+        assertTrue(engine.playWhenReady)
+        assertEquals(3_000_000L, controller.state.value.positionUs)
+        // The same plan again is a no-op.
+        controller.setPlan(edited, keepPosition = true)
+        assertEquals(1, engine.inPlaceCount)
+
+        // A different length, or a plan that doesn't keep the position, always reloads.
+        controller.setPlan(timelinePlan(6_000_000), keepPosition = true)
+        assertEquals(loads + 1, engine.loadCount)
+        controller.setPlan(timelinePlan(6_000_000, volume = 0.2f))
+        assertEquals(loads + 2, engine.loadCount)
     }
 }

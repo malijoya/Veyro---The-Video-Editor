@@ -11,6 +11,8 @@ import com.editor.veyro.core.model.overlay.OverlayContent
 import com.editor.veyro.core.model.overlay.OverlayTransform
 import com.editor.veyro.core.model.project.MediaKind
 import com.editor.veyro.core.model.time.FrameRate
+import com.editor.veyro.core.model.transform.ClipTransform
+import com.editor.veyro.core.model.transform.CropRect
 import com.editor.veyro.core.timeline.export.AudioSegment
 import com.editor.veyro.core.timeline.export.ExportPlan
 import com.editor.veyro.core.timeline.export.ExportSettings
@@ -23,6 +25,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import org.junit.After
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -104,5 +107,54 @@ class CompositionPreviewInstrumentedTest {
         instrumentation.runOnMainSync { controller.seekTo(1_200_000) }
         val again = awaitState(10_000) { it.status == PreviewStatus.READY }
         assertTrue("Position ${again.positionUs}", again.positionUs in 1_000_000..1_400_000)
+    }
+
+    /**
+     * Clip transforms in the preview: a transformed timeline plays, and a
+     * plan that changes only transforms is applied to the running
+     * composition in place (paused, with a redraw), while any other change
+     * is refused so the caller reloads.
+     */
+    @Test
+    fun transformsPlayAndUpdateInPlace() {
+        val video = TestMediaFiles.mp4(File(dir, "t.mp4"), 640, 360, fps = 30, frameCount = 45, rotationDegrees = 90)
+        val photo = TestMediaFiles.image(File(dir, "t.png"), 320, 240, android.graphics.Bitmap.CompressFormat.PNG)
+        fun plan(first: ClipTransform, photoDurationUs: Long = 1_000_000) = ExportPlan(
+            settings = ExportSettings(360, 640, FrameRate.FPS_30),
+            video = listOf(
+                VideoSegment(Uri.fromFile(video).toString(), MediaKind.VIDEO, 0, 1_500_000, sourceDurationUs = 1_500_000, transform = first),
+                VideoSegment(
+                    Uri.fromFile(photo).toString(), MediaKind.IMAGE, 0, photoDurationUs, sourceDurationUs = photoDurationUs,
+                    transform = ClipTransform(rotationDegrees = 30f, crop = CropRect(0.25f, 0.25f, 0.75f, 0.75f), opacity = 0.7f),
+                ),
+            ),
+            audioTracks = emptyList(),
+        )
+        lateinit var engine: CompositionPlaybackEngine
+        instrumentation.runOnMainSync {
+            controller = PreviewController({ CompositionPlaybackEngine(context).also { engine = it } }, scope)
+            controller.setPlan(PreviewPlan.forTimeline(plan(ClipTransform(scale = 0.5f))))
+            controller.attach()
+        }
+        val ready = awaitState(15_000) { it.status == PreviewStatus.READY || it.status == PreviewStatus.ERROR }
+        assertNull("Preview error: ${ready.error}", ready.error)
+
+        var applied = false
+        var refused = true
+        instrumentation.runOnMainSync {
+            controller.seekTo(500_000)
+            applied = engine.updateInPlace(plan(ClipTransform(scale = 1.4f, rotationDegrees = 45f, positionX = 0.3f, crop = CropRect(0f, 0f, 0.5f, 1f))))
+            refused = !engine.updateInPlace(plan(ClipTransform.DEFAULT, photoDurationUs = 2_000_000))
+        }
+        assertTrue("Transform-only change not applied in place", applied)
+        assertTrue("A timing change must reload", refused)
+        Thread.sleep(500) // Let the redraw run.
+        assertNull("Preview error after redraw: ${controller.state.value.error}", controller.state.value.error)
+        assertFalse(controller.state.value.status == PreviewStatus.ERROR)
+
+        instrumentation.runOnMainSync { controller.play() }
+        val ended = awaitState(15_000) { it.status == PreviewStatus.ENDED || it.status == PreviewStatus.ERROR }
+        assertNull("Preview error: ${ended.error}", ended.error)
+        assertTrue("Status ${ended.status}", ended.status == PreviewStatus.ENDED)
     }
 }

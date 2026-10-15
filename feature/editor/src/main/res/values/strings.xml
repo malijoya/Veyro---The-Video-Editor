@@ -47,7 +47,7 @@
     <string name="editor_zoom_out">Zoom out</string>
     <string name="editor_zoom_fit">Fit timeline</string>
 
-    <string name="editor_select_hint">Tap a clip to select it.</string>
+    <string name="editor_select_hint">Tap a clip to select it. Tap the picture in the preview to move, scale, turn or crop it.</string>
     <string name="editor_clip_timing">Starts at %1$s · %2$s long</string>
     <string name="editor_jump_to_clip">Go to clip</string>
     <string name="editor_clear_selection">Clear selection</string>
@@ -147,4 +147,40 @@
     <string name="sticker_hint">PNG and WebP images keep their transparency. The image is added to the project, not to the video track.</string>
     <string name="sticker_from_device">Choose an image</string>
     <string name="sticker_from_project">From this project</string>
+    <!-- Clip transforms (position, scale, rotation, anchor, crop, opacity) -->
+    <string name="transform_open">Transform</string>
+    <string name="transform_hide">Hide transform</string>
+    <string name="transform_tab_adjust">Position</string>
+    <string name="transform_tab_crop">Crop</string>
+    <string name="transform_tab_anchor">Anchor</string>
+    <string name="transform_fit">Fit</string>
+    <string name="transform_fill">Fill</string>
+    <string name="transform_reset">Reset</string>
+    <string name="transform_scale">Scale</string>
+    <string name="transform_rotation">Rotation</string>
+    <string name="transform_rotate_left">Rotate left</string>
+    <string name="transform_rotate_right">Rotate right</string>
+    <string name="transform_center">Center</string>
+    <string name="transform_opacity">Opacity</string>
+    <string name="transform_position_x">Horizontal position</string>
+    <string name="transform_position_y">Vertical position</string>
+    <string name="transform_offset">%1$+d%%</string>
+    <string name="transform_crop_hint">Drag the corners on the preview to crop, or drag inside the frame to move it.</string>
+    <string name="transform_crop_free">Free</string>
+    <string name="transform_crop_original">Original</string>
+    <string name="transform_crop_reset">Reset crop</string>
+    <string name="transform_anchor_hint">Scaling and rotation turn about this point. Moving it doesn\'t move the picture.</string>
+    <string name="transform_anchor_x">Anchor across</string>
+    <string name="transform_anchor_y">Anchor down</string>
+    <string name="transform_anchor_top_left">Anchor top left</string>
+    <string name="transform_anchor_top">Anchor top</string>
+    <string name="transform_anchor_top_right">Anchor top right</string>
+    <string name="transform_anchor_left">Anchor left</string>
+    <string name="transform_anchor_center">Anchor center</string>
+    <string name="transform_anchor_right">Anchor right</string>
+    <string name="transform_anchor_bottom_left">Anchor bottom left</string>
+    <string name="transform_anchor_bottom">Anchor bottom</string>
+    <string name="transform_anchor_bottom_right">Anchor bottom right</string>
+    <string name="transform_a11y_selected">Selected clip. Drag to move, pinch to scale, twist to rotate.</string>
+    <string name="transform_a11y_cropping">Cropping. Drag the corners of the frame, or drag inside it to move it.</string>
 </resources>

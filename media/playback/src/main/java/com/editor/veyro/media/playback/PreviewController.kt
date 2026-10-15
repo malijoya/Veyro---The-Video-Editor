@@ -61,6 +61,15 @@ public class PreviewController(
     public fun setPlan(newPlan: PreviewPlan, keepPosition: Boolean = false) {
         check(!released) { "Controller was released" }
         if (newPlan == plan) return
+        // A change the engine can apply on the fly (a clip being moved or cropped) keeps playing without a reload.
+        val render = newPlan.render
+        val current = engine
+        if (keepPosition && render != null && current != null && plan?.render != null && _state.value.status != PreviewStatus.ERROR &&
+            newPlan.durationUs == plan?.durationUs && current.updateInPlace(render)
+        ) {
+            plan = newPlan
+            return
+        }
         val position = if (keepPosition) _state.value.positionUs.coerceIn(0, newPlan.durationUs) else 0
         plan = newPlan
         savedPositionUs = position
