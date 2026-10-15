@@ -53,14 +53,14 @@ class ProjectDocumentMigrationTest {
     }
 
     @Test
-    fun `v1 documents are rewritten as v2 on the next save`() = runTest {
+    fun `v1 documents are rewritten in the current schema on the next save`() = runTest {
         File(tmp.root, "p1").apply { mkdirs() }.resolve("project.json").writeText(v1Fixture)
         val repo = FileProjectRepository(tmp.root, UnconfinedTestDispatcher(testScheduler), clock = { 99 })
         assertEquals("Old trip", repo.projects.first().single().name)
 
         repo.rename(ProjectId("p1"), "Renamed")
         val text = File(tmp.root, "p1/project.json").readText()
-        assertTrue(text.contains("\"schemaVersion\":2"))
+        assertTrue(text.contains("\"schemaVersion\":3"))
         assertEquals("Renamed", (ProjectDocumentCodec.decode(text) as DecodeResult.Ok).project.name)
     }
 

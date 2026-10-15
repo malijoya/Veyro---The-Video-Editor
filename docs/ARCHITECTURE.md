@@ -44,7 +44,7 @@ decision changes.
 | `:app` | Android app | exists | Activity, Navigation 3 back stack, adaptive navigation suite, manual DI (`AppContainer`). No business logic. |
 | `:core:model` | JVM | exists | Time base (`TimeUs`, `FrameRate`, `DurationFormat`), `Project`, `MediaRef`, `ProjectName` rules, and the first piece of the timeline: `Timeline`/`Track`/`Clip`, plus `DefaultArrangement`. |
 | `:core:designsystem` | Android + Compose | exists | Dark theme tokens (color, type, spacing, shapes), icons, shared components, `MediaThumbnail` and its `ThumbnailProvider` seam. |
-| `:core:timeline` | JVM | planned (M1) | Edit commands, undo/redo, timeline evaluation ("what is active at time t"). |
+| `:core:timeline` | JVM | exists | Editing domain: `EditCommand`, `TimelineEditor` (trim, split, move/reorder, delete, close gaps), `Snapper` (edge, playhead and frame snapping), `EditHistory` (undo/redo). |
 | `:data:project` | Android (JVM-only code so far) | exists | `ProjectRepository`. `FileProjectRepository` stores versioned JSON documents with atomic writes. Room index planned for M3. |
 | `:media:import` | Android | exists | `MediaProber` (metadata via `MediaExtractor` and `MediaMetadataRetriever`), `MediaMetadataAssembler` (pure merge rules), `MimeTypes`, `MediaAccess` (persisted grants, availability), `ThumbnailLoader` (video frame, image, audio cover art, LRU). Package is `media.importer` because `import` is a Kotlin keyword. |
 | `:feature:library` | Android + Compose | exists | Home and Projects tabs (`LibraryViewModel`). |
@@ -186,13 +186,60 @@ Android `namespace` is the same string:
 - **Errors:** Media3 error codes map to `PreviewError` categories, each with
   its own message and a retry.
 
+## Timeline editing
+
+- **Clip ranges:** a clip has a timeline range `[startUs, endUs)` and a source
+  range `[sourceInUs, sourceOutUs)` of equal length. Trimming moves an edge
+  and the matching source point together. Photos have no source time.
+- **Engine:** `TimelineEditor` (pure Kotlin, in `:core:timeline`) applies
+  commands and always returns a valid timeline. Requests past a limit are
+  clamped to it, and only impossible edits are rejected (unknown clip,
+  split outside the clip or within a frame of its edge, nothing to change).
+  The limits:
+  - minimum clip length of one frame
+  - source bounds for video and audio
+  - no overlaps
+  - nothing before 0
+- **Gaps:**
+  - The main video track is magnetic. It stays packed from 0, so a move
+    reorders (by the clip's midpoint), and trims and deletes close the gap.
+    This is also what keeps preview playback continuous.
+  - Other tracks keep gaps. A move lands on the nearest free position that
+    fits, delete optionally closes the gap, and `CloseGaps` packs the track.
+- **Split:** the parts are adjacent on the timeline (`left.end ==
+  right.start`) and contiguous in the source (`left.sourceOut ==
+  right.sourceIn`), so playback across the cut is identical.
+- **Snapping (`Snapper`):** within a fixed on-screen distance (12 dp,
+  converted with the current scale), drags snap to other clips' edges, the
+  playhead or 0. Otherwise they round to the nearest frame of the timeline's
+  frame rate (from the first video, or 30 fps). Splits snap the playhead to
+  a frame.
+- **UI to domain:**
+  - Compose only reports drag distances, converted once with
+    `TimelineScale`.
+  - `EditorViewModel` re-applies the command to the timeline as it was when
+    the drag began, and shows the result as a draft. It saves a single
+    undoable edit on release.
+  - The preview plays the saved timeline, so drags don't reload the player.
+  - Undo history (100 steps) lives as long as the editor's ViewModel.
+- **Storage:** the edited timeline is saved in the project document
+  (schema v3). Unedited projects store none and show the default
+  arrangement. Media imported after editing is appended to the end of the
+  matching track.
+
 ## Timeline UI
 
-- **Arrangement:** the editor shows `DefaultArrangement.build(project)`:
-  - videos and photos back to back on a Video track (photos 3 s)
-  - audio on an Audio track
-  It is rebuilt when the media changes. It isn't stored yet, and there are
-  no edit commands until M1.
+- **Arrangement:** the editor shows the stored timeline, or
+  `DefaultArrangement.build(project)` for projects not edited yet:
+  - videos and photos back to back on the Video track (photos 3 s)
+  - audio on the Audio track
+- **Editing gestures:**
+  - Selected clips show trim handles at their true edges, positioned in the
+    placement phase.
+  - A long press picks a clip up to move it.
+  - A snap guide line shows the snapped edge.
+  - Child gestures consume events, and the background scroll detector
+    yields to them.
 - **Coordinates:** `TimelineScale` is the only time/pixel conversion.
   `TimelineViewportState` adds the scroll position. The playhead is fixed at
   the viewport centre and the timeline moves under it, so the playhead time
@@ -264,6 +311,8 @@ ExoPlayer and Transformer without conversion.
 - **Schema history:**
   - v1: name and timestamps, plus video and image media.
   - v2: audio media, video/audio track info and tags.
+  - v3: the edited timeline (tracks, clips, frame rate). Every clip must
+    reference media in the project, or the document is treated as corrupt.
 
   Old versions are decoded and mapped forward in `ProjectDocumentCodec`, and
   documents are always saved in the current version. Each version has a

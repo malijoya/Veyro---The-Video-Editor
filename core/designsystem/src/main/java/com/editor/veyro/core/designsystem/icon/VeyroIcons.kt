@@ -689,4 +689,99 @@ public object VeyroIcons {
             }.also { _fitScreen = it }
         }
     private var _fitScreen: ImageVector? = null
+
+    public val ContentCut: ImageVector
+        get() {
+            _contentCut?.let { return it }
+            return materialIcon(name = "Veyro.ContentCut") {
+                materialPath {
+                    moveTo(9.64f, 7.64f)
+                    curveToRelative(0.23f, -0.5f, 0.36f, -1.05f, 0.36f, -1.64f)
+                    curveToRelative(0.0f, -2.21f, -1.79f, -4.0f, -4.0f, -4.0f)
+                    reflectiveCurveTo(2.0f, 3.79f, 2.0f, 6.0f)
+                    reflectiveCurveToRelative(1.79f, 4.0f, 4.0f, 4.0f)
+                    curveToRelative(0.59f, 0.0f, 1.14f, -0.13f, 1.64f, -0.36f)
+                    lineTo(10.0f, 12.0f)
+                    lineToRelative(-2.36f, 2.36f)
+                    curveTo(7.14f, 14.13f, 6.59f, 14.0f, 6.0f, 14.0f)
+                    curveToRelative(-2.21f, 0.0f, -4.0f, 1.79f, -4.0f, 4.0f)
+                    reflectiveCurveToRelative(1.79f, 4.0f, 4.0f, 4.0f)
+                    reflectiveCurveToRelative(4.0f, -1.79f, 4.0f, -4.0f)
+                    curveToRelative(0.0f, -0.59f, -0.13f, -1.14f, -0.36f, -1.64f)
+                    lineTo(12.0f, 14.0f)
+                    lineToRelative(7.0f, 7.0f)
+                    horizontalLineToRelative(3.0f)
+                    verticalLineToRelative(-1.0f)
+                    lineTo(9.64f, 7.64f)
+                    close()
+                    moveTo(6.0f, 8.0f)
+                    curveToRelative(-1.1f, 0.0f, -2.0f, -0.89f, -2.0f, -2.0f)
+                    reflectiveCurveToRelative(0.9f, -2.0f, 2.0f, -2.0f)
+                    reflectiveCurveToRelative(2.0f, 0.89f, 2.0f, 2.0f)
+                    reflectiveCurveToRelative(-0.9f, 2.0f, -2.0f, 2.0f)
+                    close()
+                    moveTo(6.0f, 20.0f)
+                    curveToRelative(-1.1f, 0.0f, -2.0f, -0.89f, -2.0f, -2.0f)
+                    reflectiveCurveToRelative(0.9f, -2.0f, 2.0f, -2.0f)
+                    reflectiveCurveToRelative(2.0f, 0.89f, 2.0f, 2.0f)
+                    reflectiveCurveToRelative(-0.9f, 2.0f, -2.0f, 2.0f)
+                    close()
+                    moveTo(12.0f, 12.5f)
+                    curveToRelative(-0.28f, 0.0f, -0.5f, -0.22f, -0.5f, -0.5f)
+                    reflectiveCurveToRelative(0.22f, -0.5f, 0.5f, -0.5f)
+                    reflectiveCurveToRelative(0.5f, 0.22f, 0.5f, 0.5f)
+                    reflectiveCurveToRelative(-0.22f, 0.5f, -0.5f, 0.5f)
+                    close()
+                    moveTo(19.0f, 3.0f)
+                    lineToRelative(-6.0f, 6.0f)
+                    lineToRelative(2.0f, 2.0f)
+                    lineToRelative(7.0f, -7.0f)
+                    lineTo(22.0f, 3.0f)
+                    close()
+                }
+            }.also { _contentCut = it }
+        }
+    private var _contentCut: ImageVector? = null
+
+    public val Undo: ImageVector
+        get() {
+            _undo?.let { return it }
+            return materialIcon(name = "Veyro.Undo", autoMirror = true) {
+                materialPath {
+                    moveTo(12.5f, 8.0f)
+                    curveToRelative(-2.65f, 0.0f, -5.05f, 0.99f, -6.9f, 2.6f)
+                    lineTo(2.0f, 7.0f)
+                    verticalLineToRelative(9.0f)
+                    horizontalLineToRelative(9.0f)
+                    lineToRelative(-3.62f, -3.62f)
+                    curveToRelative(1.39f, -1.16f, 3.16f, -1.88f, 5.12f, -1.88f)
+                    curveToRelative(3.54f, 0.0f, 6.55f, 2.31f, 7.6f, 5.5f)
+                    lineToRelative(2.37f, -0.78f)
+                    curveTo(21.08f, 11.03f, 17.15f, 8.0f, 12.5f, 8.0f)
+                    close()
+                }
+            }.also { _undo = it }
+        }
+    private var _undo: ImageVector? = null
+
+    public val Redo: ImageVector
+        get() {
+            _redo?.let { return it }
+            return materialIcon(name = "Veyro.Redo", autoMirror = true) {
+                materialPath {
+                    moveTo(18.4f, 10.6f)
+                    curveTo(16.55f, 8.99f, 14.15f, 8.0f, 11.5f, 8.0f)
+                    curveToRelative(-4.65f, 0.0f, -8.58f, 3.03f, -9.96f, 7.22f)
+                    lineTo(3.9f, 16.0f)
+                    curveToRelative(1.05f, -3.19f, 4.05f, -5.5f, 7.6f, -5.5f)
+                    curveToRelative(1.95f, 0.0f, 3.73f, 0.72f, 5.12f, 1.88f)
+                    lineTo(13.0f, 16.0f)
+                    horizontalLineToRelative(9.0f)
+                    verticalLineTo(7.0f)
+                    lineToRelative(-3.6f, 3.6f)
+                    close()
+                }
+            }.also { _redo = it }
+        }
+    private var _redo: ImageVector? = null
 }

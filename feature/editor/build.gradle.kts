@@ -8,5 +8,6 @@ android {
 
 dependencies {
     implementation(projects.data.project)
+    implementation(projects.core.timeline)
     implementation(projects.media.playback)
 }

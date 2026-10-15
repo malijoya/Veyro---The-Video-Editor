@@ -32,6 +32,19 @@
     <string name="editor_clip_timing">Starts at %1$s · %2$s long</string>
     <string name="editor_jump_to_clip">Go to clip</string>
     <string name="editor_clear_selection">Clear selection</string>
-    <string name="editor_tools_pending">Trim, split, reorder and export are being built. The preview plays the main track only.</string>
+    <string name="editor_trim_start">Trim start</string>
+    <string name="editor_trim_end">Trim end</string>
+    <string name="editor_split">Split at playhead</string>
+    <string name="editor_delete">Delete clip</string>
+    <string name="editor_delete_close_gap">Delete and close gap</string>
+    <string name="editor_close_gaps">Close gaps</string>
+    <string name="editor_undo">Undo</string>
+    <string name="editor_redo">Redo</string>
+    <string name="editor_edit_hint">Drag the handles to trim. Long-press a clip to move it.</string>
+    <string name="editor_msg_nothing_to_split">Move the playhead over a clip to split it.</string>
+    <string name="editor_msg_split_too_close">Too close to the clip\'s edge to split.</string>
+    <string name="editor_msg_no_gaps">This track has no gaps.</string>
+    <string name="editor_msg_save_failed">Your edit couldn\'t be saved. Check free storage.</string>
+    <string name="editor_export_pending">Export and effects are still being built. The preview plays the main track only.</string>
     <string name="editor_coming_soon">Coming soon</string>
 </resources>

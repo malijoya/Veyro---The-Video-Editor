@@ -79,6 +79,7 @@ class MediaImportViewModelTest {
             saved.value = saved.value.map { if (it.id == id) it.copy(media = it.media + fresh) else it }
             return fresh.size
         }
+        override suspend fun updateTimeline(id: ProjectId, timeline: com.editor.veyro.core.model.timeline.Timeline) = false
         override suspend fun rename(id: ProjectId, name: String) = false
         override suspend fun delete(id: ProjectId): Boolean {
             val before = saved.value.size

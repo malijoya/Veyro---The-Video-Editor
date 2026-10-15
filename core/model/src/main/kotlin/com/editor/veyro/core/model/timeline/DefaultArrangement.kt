@@ -1,16 +1,18 @@
 package com.editor.veyro.core.model.timeline
 
 import com.editor.veyro.core.model.project.MediaKind
+import com.editor.veyro.core.model.project.MediaRef
 import com.editor.veyro.core.model.project.Project
+import com.editor.veyro.core.model.time.FrameRate
 
 /**
- * Lays out a project's media as a starting timeline:
- * - videos and photos back to back on a Video track, in import order
+ * Lays out media as timeline clips:
+ * - videos and photos back to back on the main Video track, in import order
  * - audio files back to back on an Audio track, starting at 0
  *
- * Until edits are stored (M1), the editor shows this arrangement. It is
- * deterministic: the same project always gives the same clips and IDs, so
- * selection and scroll position survive recomposition and process death.
+ * [build] gives a project's starting timeline. [append] adds newly imported
+ * media to an existing, possibly edited, timeline. Clip IDs come from media
+ * IDs, so both are deterministic.
  */
 public object DefaultArrangement {
     /** How long a photo stays on screen when first placed. */
@@ -19,34 +21,45 @@ public object DefaultArrangement {
     public val VIDEO_TRACK_ID: TrackId = TrackId("video-main")
     public val AUDIO_TRACK_ID: TrackId = TrackId("audio-1")
 
+    /** The timeline the editor shows: the stored one, or the default arrangement if none was saved yet. */
+    public fun timelineFor(project: Project): Timeline = project.timeline ?: build(project)
+
     public fun build(project: Project): Timeline {
-        val visual = mutableListOf<Clip>()
-        val audio = mutableListOf<Clip>()
-        var visualEnd = 0L
-        var audioEnd = 0L
-        for (media in project.media) {
-            when (media.kind) {
-                MediaKind.VIDEO -> if (media.durationUs > 0) {
-                    visual += Clip(clipIdFor(media.id.value), media.id, visualEnd, sourceInUs = 0, durationUs = media.durationUs)
-                    visualEnd += media.durationUs
-                }
-                MediaKind.IMAGE -> {
-                    visual += Clip(clipIdFor(media.id.value), media.id, visualEnd, sourceInUs = 0, durationUs = PHOTO_DURATION_US)
-                    visualEnd += PHOTO_DURATION_US
-                }
-                MediaKind.AUDIO -> if (media.durationUs > 0) {
-                    audio += Clip(clipIdFor(media.id.value), media.id, audioEnd, sourceInUs = 0, durationUs = media.durationUs)
-                    audioEnd += media.durationUs
-                }
-            }
-        }
-        return Timeline(
-            listOf(
-                Track(VIDEO_TRACK_ID, TrackKind.VIDEO, visual),
-                Track(AUDIO_TRACK_ID, TrackKind.AUDIO, audio),
+        val empty = Timeline(
+            tracks = listOf(
+                Track(VIDEO_TRACK_ID, TrackKind.VIDEO, emptyList()),
+                Track(AUDIO_TRACK_ID, TrackKind.AUDIO, emptyList()),
             ),
+            frameRate = frameRateFor(project.media),
         )
+        return append(empty, project.media)
     }
+
+    /**
+     * Adds [media] at the end of the main track (video and photos) or the
+     * audio track (audio). Media already on the timeline is skipped.
+     */
+    public fun append(timeline: Timeline, media: List<MediaRef>): Timeline {
+        val onTimeline = timeline.tracks.flatMap { track -> track.clips.map { it.mediaId } }.toSet()
+        var result = timeline
+        for (item in media) {
+            if (item.id in onTimeline) continue
+            val (trackKind, durationUs) = when (item.kind) {
+                MediaKind.VIDEO -> TrackKind.VIDEO to item.durationUs
+                MediaKind.IMAGE -> TrackKind.VIDEO to PHOTO_DURATION_US
+                MediaKind.AUDIO -> TrackKind.AUDIO to item.durationUs
+            }
+            if (durationUs <= 0) continue
+            val track = result.tracks.firstOrNull { it.kind == trackKind } ?: continue
+            val clip = Clip(clipIdFor(item.id.value), item.id, startUs = track.endUs, sourceInUs = 0, durationUs = durationUs)
+            result = result.withTrack(track.copy(clips = track.clips + clip))
+        }
+        return result
+    }
+
+    /** The edit frame rate: the first video's rate, or 30 fps when no video declares one. */
+    public fun frameRateFor(media: List<MediaRef>): FrameRate =
+        media.firstNotNullOfOrNull { it.video?.frameRate } ?: FrameRate.FPS_30
 
     private fun clipIdFor(mediaId: String) = ClipId("clip-$mediaId")
 }

@@ -31,7 +31,28 @@ run. Device-dependent checks need a device or emulator.
 - **Still open from M2/M3:** Media3-based frame-accurate probing, Room index,
   autosave of edits, and on-device verification.
 
-## M1 — Timeline core (`:core:model`, `:core:timeline`, JVM only)
+## M1 — Timeline core (`:core:model`, `:core:timeline`, JVM only) (code complete 2026-10-14, awaiting build)
+- **Done:**
+  - Clip timeline and source ranges.
+  - `TimelineEditor`: trim start/end, split, move/reorder, delete (close or
+    keep the gap), close gaps.
+  - Magnetic main track, frame-aware `Snapper`, `EditHistory` undo/redo.
+  - Schema v3 storage.
+  - Editor gestures: trim handles, long-press move, snap guide, toolbar.
+- **Tests:**
+  - trim boundaries (source, neighbours, one frame, photos)
+  - split continuity and NTSC alignment
+  - magnetic reorder and gap-fitting moves
+  - gaps, durations, snapping, history
+  - 500 random edits checked against all invariants
+  - schema migration, editor ViewModel
+- **Still open:**
+  - speed changes
+  - auto-scroll while dragging near the edge
+  - moving clips between tracks
+  - persisting undo history across process death
+
+Original scope:
 - Track (video/audio/overlay/text) and Clip, with stable IDs, referencing the
   existing `MediaRef`s.
 - Project document `schemaVersion = 3`, with tested v1/v2 → v3 migrations

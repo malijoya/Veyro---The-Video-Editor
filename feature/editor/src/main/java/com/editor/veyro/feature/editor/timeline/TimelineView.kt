@@ -3,6 +3,10 @@ package com.editor.veyro.feature.editor.timeline
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -21,6 +25,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -28,6 +33,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Path
@@ -57,6 +63,7 @@ import com.editor.veyro.core.model.project.MediaKind
 import com.editor.veyro.core.model.time.DurationFormat
 import com.editor.veyro.core.model.timeline.ClipId
 import com.editor.veyro.core.model.timeline.TrackKind
+import com.editor.veyro.feature.editor.DragHandle
 import com.editor.veyro.feature.editor.R
 import com.editor.veyro.feature.editor.TimelineClipUi
 import com.editor.veyro.feature.editor.TimelineTrackUi
@@ -77,6 +84,13 @@ public data class TimelineMetrics(val rulerHeight: Dp, val videoTrackHeight: Dp,
  * The editor timeline: zoom controls, a time ruler, labelled tracks of clips
  * with filmstrips, and a fixed centre playhead.
  *
+ * Editing gestures report pixel distances converted to microseconds with the
+ * viewport's single [TimelineScale]. The editing itself happens in the
+ * ViewModel and domain layer:
+ * - a selected clip shows trim handles on both edges
+ * - a long press on any clip picks it up to move
+ * - [snapGuideUs] draws the edge a drag snapped to
+ *
  * Recomposition happens only when [tracks] or [selectedClipId] change.
  * Scrolling, zooming and playback only re-lay-out and redraw: clip
  * positions are read from [viewport] in the layout phase, and ruler and
@@ -92,13 +106,33 @@ public fun TimelineView(
     onInteractionStart: () -> Unit,
     onInteractionEnd: () -> Unit,
     modifier: Modifier = Modifier,
+    snapGuideUs: Long? = null,
+    onDragStart: (ClipId, DragHandle) -> Unit = { _, _ -> },
+    onDragUpdate: (deltaUs: Long) -> Unit = {},
+    onDragEnd: () -> Unit = {},
+    onDragCancel: () -> Unit = {},
 ) {
     val thumbnails = rememberStripThumbnails()
+    val dragStart by rememberUpdatedState(onDragStart)
+    val dragUpdate by rememberUpdatedState(onDragUpdate)
+    val dragEnd by rememberUpdatedState(onDragEnd)
+    val dragCancel by rememberUpdatedState(onDragCancel)
+    // Remembered once and forwarding to the latest lambdas, so clips get the same instance and skip recomposition.
+    val clipGestures = remember(viewport) {
+        ClipGestureCallbacks(
+            onStart = { id, handle -> dragStart(id, handle) },
+            // The single px-to-time conversion, at the current zoom.
+            onUpdate = { totalDxPx -> dragUpdate(viewport.scale.pxToUs(totalDxPx)) },
+            onEnd = { dragEnd() },
+            onCancel = { dragCancel() },
+        )
+    }
     val density = LocalDensity.current
     val currentTracks by rememberUpdatedState(tracks)
     val selectClip by rememberUpdatedState(onSelectClip)
     val startInteraction by rememberUpdatedState(onInteractionStart)
     val endInteraction by rememberUpdatedState(onInteractionEnd)
+    val selectFromClip: (ClipId) -> Unit = remember { { id -> selectClip(id) } }
 
     Column(modifier) {
         ZoomBar(viewport)
@@ -144,12 +178,14 @@ public fun TimelineView(
                                 selectedClipId = selectedClipId,
                                 viewport = viewport,
                                 thumbnails = thumbnails,
-                                onSelect = { selectClip(it) },
+                                gestures = clipGestures,
+                                onSelect = selectFromClip,
                                 modifier = Modifier.fillMaxWidth().height(metrics.trackHeight(track.kind)),
                             )
                         }
                     }
                 }
+                if (snapGuideUs != null) SnapGuide(viewport, snapGuideUs, Modifier.matchParentSize())
                 Playhead(Modifier.matchParentSize())
             }
         }
@@ -258,6 +294,7 @@ private fun TrackLane(
     selectedClipId: ClipId?,
     viewport: TimelineViewportState,
     thumbnails: StripThumbnails,
+    gestures: ClipGestureCallbacks,
     onSelect: (ClipId) -> Unit,
     modifier: Modifier,
 ) {
@@ -277,6 +314,7 @@ private fun TrackLane(
                         selected = clip.id == selectedClipId,
                         viewport = viewport,
                         thumbnails = thumbnails,
+                        gestures = gestures,
                         onSelect = onSelect,
                     )
                 }
@@ -304,8 +342,10 @@ private fun TimelineClip(
     selected: Boolean,
     viewport: TimelineViewportState,
     thumbnails: StripThumbnails,
+    gestures: ClipGestureCallbacks,
     onSelect: (ClipId) -> Unit,
 ) {
+    val currentGestures by rememberUpdatedState(gestures)
     val shape = RoundedCornerShape(6.dp)
     val container = if (trackKind == TrackKind.VIDEO) MaterialTheme.colorScheme.surfaceContainerHighest else MaterialTheme.colorScheme.secondaryContainer
     val placeholder = MaterialTheme.colorScheme.surfaceContainerHigh
@@ -338,6 +378,23 @@ private fun TimelineClip(
                 contentDescription = description
                 this.selected = selected
                 onClick(label = selectLabel) { onSelect(clip.id); true }
+            }
+            // Long press picks the clip up. Dragging then moves it (a reorder on the main track).
+            .pointerInput(clip.id) {
+                var totalDx = 0f
+                detectDragGesturesAfterLongPress(
+                    onDragStart = {
+                        totalDx = 0f
+                        currentGestures.onStart(clip.id, DragHandle.BODY)
+                    },
+                    onDragEnd = { currentGestures.onEnd() },
+                    onDragCancel = { currentGestures.onCancel() },
+                    onDrag = { change, amount ->
+                        change.consume()
+                        totalDx += amount.x
+                        currentGestures.onUpdate(totalDx)
+                    },
+                )
             },
     ) {
         Row(
@@ -359,6 +416,82 @@ private fun TimelineClip(
                 overflow = TextOverflow.Ellipsis,
             )
         }
+        if (selected) {
+            TrimHandle(clip, DragHandle.START, viewport, currentGestures)
+            TrimHandle(clip, DragHandle.END, viewport, currentGestures)
+        }
+    }
+}
+
+/** Gesture callbacks shared by all clips. Distances are in pixels. The editor converts them to time. */
+@androidx.compose.runtime.Stable
+internal class ClipGestureCallbacks(
+    val onStart: (ClipId, DragHandle) -> Unit,
+    val onUpdate: (totalDxPx: Float) -> Unit,
+    val onEnd: () -> Unit,
+    val onCancel: () -> Unit,
+)
+
+private val TRIM_HANDLE_WIDTH = 20.dp
+
+/**
+ * A grip on one edge of the selected clip. It sits at the clip's true edge,
+ * read from [viewport] in the placement phase, even when the clip is only
+ * partly on screen.
+ */
+@Composable
+private fun TrimHandle(
+    clip: TimelineClipUi,
+    handle: DragHandle,
+    viewport: TimelineViewportState,
+    gestures: ClipGestureCallbacks,
+) {
+    val color = MaterialTheme.colorScheme.primary
+    val grip = MaterialTheme.colorScheme.onPrimary
+    val label = stringResource(if (handle == DragHandle.START) R.string.editor_trim_start else R.string.editor_trim_end)
+    Box(
+        Modifier
+            .offset {
+                val widthPx = TRIM_HANDLE_WIDTH.roundToPx()
+                val spanStart = viewport.visibleSpan(clip.startUs, clip.endUs)?.start ?: 0f
+                val edge = if (handle == DragHandle.START) clip.startUs else clip.endUs
+                val x = viewport.xForTime(edge) - spanStart - if (handle == DragHandle.END) widthPx.toFloat() else 0f
+                IntOffset(x.roundToInt(), 0)
+            }
+            .width(TRIM_HANDLE_WIDTH)
+            .fillMaxHeight()
+            .background(color, RoundedCornerShape(4.dp))
+            .drawBehind {
+                val x = size.width / 2
+                drawLine(grip, Offset(x, size.height * 0.3f), Offset(x, size.height * 0.7f), strokeWidth = 2.dp.toPx())
+            }
+            .semantics { contentDescription = label }
+            .pointerInput(clip.id, handle) {
+                var totalDx = 0f
+                detectHorizontalDragGestures(
+                    onDragStart = {
+                        totalDx = 0f
+                        gestures.onStart(clip.id, handle)
+                    },
+                    onDragEnd = { gestures.onEnd() },
+                    onDragCancel = { gestures.onCancel() },
+                    onHorizontalDrag = { change, dx ->
+                        change.consume()
+                        totalDx += dx
+                        gestures.onUpdate(totalDx)
+                    },
+                )
+            },
+    )
+}
+
+/** A vertical line at the time a drag snapped to. */
+@Composable
+private fun SnapGuide(viewport: TimelineViewportState, timeUs: Long, modifier: Modifier) {
+    val color = MaterialTheme.colorScheme.secondary
+    Canvas(modifier) {
+        val x = viewport.xForTime(timeUs)
+        drawLine(color, Offset(x, 0f), Offset(x, size.height), strokeWidth = 1.5.dp.toPx())
     }
 }
 

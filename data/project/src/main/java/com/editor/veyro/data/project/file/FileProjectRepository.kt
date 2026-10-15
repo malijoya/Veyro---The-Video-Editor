@@ -4,6 +4,8 @@ import com.editor.veyro.core.model.project.MediaRef
 import com.editor.veyro.core.model.project.Project
 import com.editor.veyro.core.model.project.ProjectId
 import com.editor.veyro.core.model.project.ProjectName
+import com.editor.veyro.core.model.timeline.DefaultArrangement
+import com.editor.veyro.core.model.timeline.Timeline
 import com.editor.veyro.data.project.MediaAccessReleaser
 import com.editor.veyro.data.project.ProjectRepository
 import java.io.File
@@ -86,11 +88,34 @@ public class FileProjectRepository(
             val fresh = media.filter { knownUris.add(it.uri) }
             added = fresh.size
             if (fresh.isEmpty()) return@mutate current
-            val updated = existing.copy(media = existing.media + fresh, updatedAtEpochMs = clock())
+            val updated = existing.copy(
+                media = existing.media + fresh,
+                timeline = existing.timeline?.let { DefaultArrangement.append(it, fresh) },
+                updatedAtEpochMs = clock(),
+            )
             write(updated)
             current + (id to updated)
         }
         return added
+    }
+
+    override suspend fun updateTimeline(id: ProjectId, timeline: Timeline): Boolean {
+        var found = false
+        mutate { current ->
+            val existing = current[id] ?: return@mutate current
+            found = true
+            val mediaIds = existing.media.map { it.id }.toSet()
+            timeline.tracks.forEach { track ->
+                track.clips.forEach { clip ->
+                    require(clip.mediaId in mediaIds) { "Clip ${clip.id.value} references media not in the project" }
+                }
+            }
+            if (existing.timeline == timeline) return@mutate current
+            val updated = existing.copy(timeline = timeline, updatedAtEpochMs = clock())
+            write(updated)
+            current + (id to updated)
+        }
+        return found
     }
 
     override suspend fun rename(id: ProjectId, name: String): Boolean {

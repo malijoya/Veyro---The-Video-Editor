@@ -23,6 +23,10 @@ import kotlinx.coroutines.launch
  * [onInteractionStart] fires when scrolling or zooming begins, and
  * [onInteractionEnd] fires once the gesture and any fling have finished.
  * The editor pauses playback and seeks around these.
+ *
+ * Clip gestures (trim handles, long-press move) are handled by child
+ * composables, which see pointer events first. Once a child consumes a
+ * gesture, this detector ignores the rest of it.
  */
 internal fun Modifier.timelineGestures(
     state: TimelineViewportState,
@@ -45,6 +49,7 @@ internal fun Modifier.timelineGestures(
             var dragging = false
             var pinching = false
             var totalDx = 0f
+            var claimedByChild = false
 
             fun begin() {
                 if (!state.isUserInteracting) {
@@ -55,6 +60,8 @@ internal fun Modifier.timelineGestures(
 
             do {
                 val event = awaitPointerEvent()
+                if (!dragging && !pinching && event.changes.any { it.isConsumed }) claimedByChild = true
+                if (claimedByChild) continue
                 val pressed = event.changes.filter { it.pressed }
                 if (pressed.size >= 2) {
                     if (!pinching) {
@@ -81,6 +88,10 @@ internal fun Modifier.timelineGestures(
             } while (event.changes.any { it.pressed })
 
             when {
+                claimedByChild -> if (wasFlinging) {
+                    state.isUserInteracting = false
+                    onInteractionEnd()
+                }
                 dragging && !pinching -> {
                     val vx = velocity.calculateVelocity().x
                     flingJob = launch {

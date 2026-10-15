@@ -2,6 +2,8 @@ package com.editor.veyro.feature.editor
 
 import android.os.SystemClock
 import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -18,6 +20,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledIconButton
@@ -25,6 +28,8 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -43,6 +48,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -58,6 +64,8 @@ import com.editor.veyro.core.designsystem.theme.Layout
 import com.editor.veyro.core.designsystem.theme.Spacing
 import com.editor.veyro.core.model.project.MediaKind
 import com.editor.veyro.core.model.time.DurationFormat
+import com.editor.veyro.core.model.timeline.ClipId
+import com.editor.veyro.core.model.timeline.TrackId
 import com.editor.veyro.core.model.timeline.TrackKind
 import com.editor.veyro.feature.editor.timeline.TimelineMetrics
 import com.editor.veyro.feature.editor.timeline.TimelineView
@@ -81,6 +89,7 @@ public fun EditorRoute(viewModel: EditorViewModel, onBack: () -> Unit) {
     BindPreviewLifecycle(viewModel.controller)
     PlayheadSync(viewModel.controller, viewport, (uiState as? EditorUiState.Ready)?.durationUs ?: 0)
 
+    val density = LocalDensity.current
     EditorScreen(
         uiState = uiState,
         playback = playback,
@@ -95,8 +104,46 @@ public fun EditorRoute(viewModel: EditorViewModel, onBack: () -> Unit) {
             viewport.scrollToTime(timeUs)
             viewModel.controller.seekTo(timeUs)
         },
+        editActions = EditActions(
+            onDragStart = { id, handle ->
+                viewModel.controller.pause()
+                viewModel.beginDrag(id, handle)
+            },
+            onDragUpdate = { deltaUs ->
+                // Snap distance is fixed on screen, so it covers less time when zoomed in.
+                val thresholdUs = viewport.scale.pxToUs(with(density) { SNAP_DISTANCE.toPx() })
+                viewModel.updateDrag(deltaUs, thresholdUs, viewport.playheadUs)
+            },
+            onDragEnd = viewModel::endDrag,
+            onDragCancel = viewModel::cancelDrag,
+            onSplit = { viewModel.split(viewport.playheadUs) },
+            onDelete = { viewModel.deleteSelected(closeGap = false) },
+            onDeleteCloseGap = { viewModel.deleteSelected(closeGap = true) },
+            onCloseGaps = viewModel::closeGaps,
+            onUndo = viewModel::undo,
+            onRedo = viewModel::redo,
+            onMessageShown = viewModel::messageShown,
+        ),
     )
 }
+
+/** On-screen distance within which a dragged edge snaps to another edge or the playhead. */
+private val SNAP_DISTANCE = 12.dp
+
+/** Editing intents from the screen. Each maps to one ViewModel call. No editing logic lives in the UI. */
+internal class EditActions(
+    val onDragStart: (ClipId, DragHandle) -> Unit,
+    val onDragUpdate: (Long) -> Unit,
+    val onDragEnd: () -> Unit,
+    val onDragCancel: () -> Unit,
+    val onSplit: () -> Unit,
+    val onDelete: () -> Unit,
+    val onDeleteCloseGap: () -> Unit,
+    val onCloseGaps: (TrackId) -> Unit,
+    val onUndo: () -> Unit,
+    val onRedo: () -> Unit,
+    val onMessageShown: () -> Unit,
+)
 
 /**
  * Keeps the playhead and the player in step:
@@ -138,9 +185,13 @@ internal fun EditorScreen(
     onScrubStart: () -> Unit,
     onScrubEnd: () -> Unit,
     onJumpTo: (Long) -> Unit,
+    editActions: EditActions,
 ) {
     val ready = uiState as? EditorUiState.Ready
+    val snackbarHostState = remember { SnackbarHostState() }
+    EditorMessageEffect(ready?.message, snackbarHostState, editActions.onMessageShown)
     Scaffold(
+        snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
                 title = { Text(ready?.projectName.orEmpty(), maxLines = 1, overflow = TextOverflow.Ellipsis) },
@@ -180,8 +231,26 @@ internal fun EditorScreen(
                     onScrubStart = onScrubStart,
                     onScrubEnd = onScrubEnd,
                     onJumpTo = onJumpTo,
+                    editActions = editActions,
                 )
             }
+        }
+    }
+}
+
+@Composable
+private fun EditorMessageEffect(message: EditorMessage?, snackbarHostState: SnackbarHostState, onShown: () -> Unit) {
+    val text = when (message) {
+        EditorMessage.NOTHING_TO_SPLIT -> stringResource(R.string.editor_msg_nothing_to_split)
+        EditorMessage.SPLIT_TOO_CLOSE -> stringResource(R.string.editor_msg_split_too_close)
+        EditorMessage.NO_GAPS -> stringResource(R.string.editor_msg_no_gaps)
+        EditorMessage.SAVE_FAILED -> stringResource(R.string.editor_msg_save_failed)
+        null -> null
+    }
+    LaunchedEffect(message) {
+        if (text != null) {
+            snackbarHostState.showSnackbar(text)
+            onShown()
         }
     }
 }
@@ -198,6 +267,7 @@ private fun EditorContent(
     onScrubStart: () -> Unit,
     onScrubEnd: () -> Unit,
     onJumpTo: (Long) -> Unit,
+    editActions: EditActions,
 ) {
     // Fit the whole timeline once when the editor first has a size and some content.
     var fitted by rememberSaveable { mutableStateOf(false) }
@@ -239,8 +309,14 @@ private fun EditorContent(
                 onInteractionStart = onScrubStart,
                 onInteractionEnd = onScrubEnd,
                 modifier = Modifier.fillMaxWidth(),
+                snapGuideUs = state.snapGuideUs,
+                onDragStart = editActions.onDragStart,
+                onDragUpdate = editActions.onDragUpdate,
+                onDragEnd = editActions.onDragEnd,
+                onDragCancel = editActions.onDragCancel,
             )
         }
+        EditToolbar(state, editActions)
         SelectionBar(state, compact, onClearSelection = { onSelectClip(null) }, onJumpTo = onJumpTo)
     }
 }
@@ -348,7 +424,49 @@ private fun TransportRow(state: EditorUiState.Ready, playback: PreviewState, vie
     }
 }
 
-/** Details of the selected clip, and a plain note on which editing tools are still to come. */
+/**
+ * Editing buttons. Each is enabled only when its edit can apply:
+ * - Delete needs a selection.
+ * - "Delete and close gap" appears only on tracks that keep gaps, because the
+ *   main track always closes them.
+ * - Close gaps appears when the selected clip's track has gaps.
+ */
+@Composable
+private fun EditToolbar(state: EditorUiState.Ready, actions: EditActions) {
+    val track = state.selectedTrack
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState())
+            .padding(horizontal = Spacing.sm),
+    ) {
+        IconButton(onClick = actions.onUndo, enabled = state.canUndo && !state.isDragging) {
+            Icon(VeyroIcons.Undo, contentDescription = stringResource(R.string.editor_undo))
+        }
+        IconButton(onClick = actions.onRedo, enabled = state.canRedo && !state.isDragging) {
+            Icon(VeyroIcons.Redo, contentDescription = stringResource(R.string.editor_redo))
+        }
+        IconButton(onClick = actions.onSplit, enabled = state.tracks.any { it.clips.isNotEmpty() } && !state.isDragging) {
+            Icon(VeyroIcons.ContentCut, contentDescription = stringResource(R.string.editor_split))
+        }
+        IconButton(onClick = actions.onDelete, enabled = state.selectedClip != null && !state.isDragging) {
+            Icon(Icons.Outlined.Delete, contentDescription = stringResource(R.string.editor_delete))
+        }
+        if (track != null && !track.magnetic) {
+            TextButton(onClick = actions.onDeleteCloseGap, enabled = !state.isDragging) {
+                Text(stringResource(R.string.editor_delete_close_gap))
+            }
+        }
+        if (track != null && track.hasGaps) {
+            TextButton(onClick = { actions.onCloseGaps(track.id) }, enabled = !state.isDragging) {
+                Text(stringResource(R.string.editor_close_gaps))
+            }
+        }
+    }
+}
+
+/** Details of the selected clip, and a plain note on which features are still to come. */
 @Composable
 private fun SelectionBar(
     state: EditorUiState.Ready,
@@ -361,7 +479,7 @@ private fun SelectionBar(
         Column(Modifier.padding(horizontal = Layout.screenGutter, vertical = Spacing.sm)) {
             if (clip == null) {
                 Text(
-                    stringResource(R.string.editor_select_hint),
+                    stringResource(R.string.editor_select_hint) + " " + stringResource(R.string.editor_edit_hint),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -391,7 +509,7 @@ private fun SelectionBar(
                         .heightIn(min = 24.dp),
                 ) {
                     Text(
-                        stringResource(R.string.editor_tools_pending),
+                        stringResource(R.string.editor_export_pending),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )

@@ -22,6 +22,12 @@ public data class Project(
     val createdAtEpochMs: Long,
     val updatedAtEpochMs: Long,
     val media: List<MediaRef>,
+    /**
+     * The edited arrangement, or null if the user hasn't edited yet. In that
+     * case the editor starts from
+     * [com.editor.veyro.core.model.timeline.DefaultArrangement].
+     */
+    val timeline: com.editor.veyro.core.model.timeline.Timeline? = null,
 ) {
     /** The media that represents the project in lists: the first visual item, else the first item. */
     val coverMedia: MediaRef? get() = media.firstOrNull { it.kind != MediaKind.AUDIO } ?: media.firstOrNull()

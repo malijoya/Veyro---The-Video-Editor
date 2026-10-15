@@ -73,6 +73,7 @@ class MediaPreviewViewModelTest {
         override fun project(id: ProjectId) = saved.map { all -> all.firstOrNull { it.id == id } }
         override suspend fun create(name: String, media: List<MediaRef>) = error("unused")
         override suspend fun addMedia(id: ProjectId, media: List<MediaRef>): Int? = error("unused")
+        override suspend fun updateTimeline(id: ProjectId, timeline: com.editor.veyro.core.model.timeline.Timeline) = false
         override suspend fun rename(id: ProjectId, name: String): Boolean {
             saved.value = saved.value.map { if (it.id == id) it.copy(name = name) else it }
             return true

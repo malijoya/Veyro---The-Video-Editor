@@ -3,6 +3,7 @@ package com.editor.veyro.data.project
 import com.editor.veyro.core.model.project.MediaRef
 import com.editor.veyro.core.model.project.Project
 import com.editor.veyro.core.model.project.ProjectId
+import com.editor.veyro.core.model.timeline.Timeline
 import kotlinx.coroutines.flow.Flow
 
 /** Saved projects. The only way the rest of the app reads or changes them. */
@@ -23,10 +24,18 @@ public interface ProjectRepository {
 
     /**
      * Appends [media] to the project, skipping items whose source URI is
-     * already in it. Returns the number added, or `null` if the project no
-     * longer exists.
+     * already in it. If the project has an edited timeline, the new media is
+     * added to the end of its tracks too. Returns the number added, or `null`
+     * if the project no longer exists.
      */
     public suspend fun addMedia(id: ProjectId, media: List<MediaRef>): Int?
+
+    /**
+     * Saves an edited timeline. Returns false if the project no longer exists.
+     *
+     * @throws IllegalArgumentException if a clip references media that isn't in the project.
+     */
+    public suspend fun updateTimeline(id: ProjectId, timeline: Timeline): Boolean
 
     /** @throws IllegalArgumentException if the name is blank. Returns false if the project no longer exists. */
     public suspend fun rename(id: ProjectId, name: String): Boolean
