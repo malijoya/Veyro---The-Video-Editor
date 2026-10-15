@@ -26,8 +26,12 @@ import com.editor.veyro.core.model.project.MediaId
 import com.editor.veyro.core.model.project.ProjectId
 import com.editor.veyro.feature.editor.EditorRoute
 import com.editor.veyro.feature.editor.EditorViewModel
+import com.editor.veyro.feature.export.ExportRoute
+import com.editor.veyro.feature.export.ExportViewModel
+import com.editor.veyro.media.export.AndroidExportPublisher
 import com.editor.veyro.feature.project.preview.MediaPreviewRoute
 import com.editor.veyro.feature.project.preview.MediaPreviewViewModel
+import com.editor.veyro.media.playback.CompositionPlaybackEngine
 import com.editor.veyro.media.playback.ExoPlaybackEngine
 import com.editor.veyro.media.playback.PreviewController
 import com.editor.veyro.feature.library.HomeRoute
@@ -45,6 +49,7 @@ import com.editor.veyro.feature.settings.SettingsRoute
 import com.editor.veyro.feature.settings.SettingsViewModel
 import com.editor.veyro.navigation.HomeKey
 import com.editor.veyro.navigation.EditorKey
+import com.editor.veyro.navigation.ExportKey
 import com.editor.veyro.navigation.ImportKey
 import com.editor.veyro.navigation.PreviewKey
 import com.editor.veyro.navigation.ProjectKey
@@ -180,13 +185,35 @@ fun VeyroApp(container: AppContainer) {
                                 savedState = createSavedStateHandle(),
                                 projectId = ProjectId(key.projectId),
                                 repository = container.projects,
+                                // The whole timeline, every track mixed, played as the same composition export renders.
                                 createController = { scope ->
-                                    PreviewController(engineFactory = { ExoPlaybackEngine(appContext) }, scope = scope)
+                                    PreviewController(engineFactory = { CompositionPlaybackEngine(appContext) }, scope = scope)
                                 },
                                 autosave = container.autosave,
+                                waveforms = container.waveforms,
                             )
                         },
                         onBack = { backStack.removeLastOrNull() },
+                        onExport = { backStack.add(ExportKey(key.projectId)) },
+                    )
+                }
+                entry<ExportKey> { key ->
+                    ExportRoute(
+                        viewModel = viewModel {
+                            ExportViewModel(
+                                savedState = createSavedStateHandle(),
+                                projectId = ProjectId(key.projectId),
+                                repository = container.projects,
+                                checkMedia = container.mediaAccess::health,
+                                pipeline = container.exportPipeline(),
+                                galleryAvailable = AndroidExportPublisher.galleryAvailable,
+                                flushPendingEdits = container.autosave::flush,
+                                waveforms = container.waveforms,
+                            )
+                        },
+                        onBack = { backStack.removeLastOrNull() },
+                        // Back to the editor the export started from.
+                        onDone = { backStack.removeLastOrNull() },
                     )
                 }
                 entry<PreviewKey> { key ->

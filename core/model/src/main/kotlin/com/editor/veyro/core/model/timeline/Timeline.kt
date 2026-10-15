@@ -1,5 +1,8 @@
 package com.editor.veyro.core.model.timeline
 
+import com.editor.veyro.core.model.audio.AudioRole
+import com.editor.veyro.core.model.audio.ClipAudio
+import com.editor.veyro.core.model.audio.TrackAudio
 import com.editor.veyro.core.model.project.MediaId
 import com.editor.veyro.core.model.time.FrameRate
 
@@ -46,6 +49,8 @@ public data class Clip(
     val durationUs: Long,
     /** Effects applied to this clip, in order. Edits (trim, split, move) carry them along unchanged. */
     val effects: List<ClipEffect> = emptyList(),
+    /** Volume, mute and fades for the clip's sound. Ignored for photos, and for videos without an audio stream. */
+    val audio: ClipAudio = ClipAudio.DEFAULT,
 ) {
     init {
         require(startUs >= 0) { "startUs must not be negative" }
@@ -82,11 +87,19 @@ public data class ClipEffect(
     }
 }
 
-/** An ordered lane of clips. Clips never overlap and are sorted by start time. */
+/**
+ * An ordered lane of clips. Clips never overlap and are sorted by start time.
+ *
+ * @property audio volume and mute for the whole track, applied on top of each
+ *   clip's own. On the main track it controls the videos' own sound.
+ * @property role for audio tracks: music or voiceover. Null for video tracks.
+ */
 public data class Track(
     val id: TrackId,
     val kind: TrackKind,
     val clips: List<Clip>,
+    val audio: TrackAudio = TrackAudio.DEFAULT,
+    val role: AudioRole? = null,
 ) {
     init {
         clips.zipWithNext().forEach { (a, b) ->

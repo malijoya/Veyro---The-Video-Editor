@@ -4,6 +4,11 @@ import androidx.compose.runtime.Immutable
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.editor.veyro.core.model.audio.AudioRole
+import com.editor.veyro.core.model.audio.ClipAudio
+import com.editor.veyro.core.model.audio.TrackAudio
+import com.editor.veyro.core.model.audio.Waveform
+import com.editor.veyro.core.model.audio.WaveformSource
 import com.editor.veyro.core.model.project.MediaId
 import com.editor.veyro.core.model.project.MediaKind
 import com.editor.veyro.core.model.project.MediaRef
@@ -25,11 +30,14 @@ import com.editor.veyro.core.timeline.MediaBounds
 import com.editor.veyro.core.timeline.Snap
 import com.editor.veyro.core.timeline.Snapper
 import com.editor.veyro.core.timeline.TimelineEditor
+import com.editor.veyro.core.timeline.export.ExportOptions
+import com.editor.veyro.core.timeline.export.ExportPlanResult
+import com.editor.veyro.core.timeline.export.ExportPlanner
+import com.editor.veyro.core.timeline.export.ExportSettings
 import com.editor.veyro.data.project.ProjectAutosave
 import com.editor.veyro.data.project.ProjectRepository
 import com.editor.veyro.media.playback.PreviewController
 import com.editor.veyro.media.playback.PreviewPlan
-import com.editor.veyro.media.playback.PreviewSegment
 import java.util.UUID
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -53,6 +61,11 @@ public data class TimelineClipUi(
     val uri: String,
     val mediaKind: MediaKind,
     val title: String,
+    /** Whether the media has an audio stream. Audio controls show only then. */
+    val hasAudio: Boolean = false,
+    val audio: ClipAudio = ClipAudio.DEFAULT,
+    /** Measured peaks of the media, once analysed. Null while analysing, or when there's no audio. */
+    val waveform: Waveform? = null,
 ) {
     val endUs: Long get() = startUs + durationUs
     val sourceOutUs: Long get() = sourceInUs + durationUs
@@ -66,6 +79,9 @@ public data class TimelineTrackUi(
     /** The main track keeps clips packed. Moves reorder, and deletes close gaps. */
     val magnetic: Boolean,
     val hasGaps: Boolean,
+    val audio: TrackAudio = TrackAudio.DEFAULT,
+    /** Music or voiceover, for audio tracks. */
+    val role: AudioRole? = null,
 )
 
 /** Which part of a clip a drag edits. */
@@ -79,6 +95,9 @@ public enum class EditorMessage {
 
     /** The timeline changed outside the editor's history (for example, media was added), so older steps can't be undone or redone. */
     HISTORY_OUT_OF_DATE,
+
+    /** An audio change on a clip with no sound (a photo, or a video without an audio stream). */
+    CLIP_HAS_NO_AUDIO,
 }
 
 /** Autosave state shown in the editor's top bar. */
@@ -94,7 +113,7 @@ public sealed interface EditorUiState {
         val tracks: List<TimelineTrackUi>,
         val durationUs: Long,
         val selectedClip: TimelineClipUi?,
-        /** Which track the preview plays, or null when there's nothing to play. */
+        /** VIDEO when the preview shows pictures, AUDIO for an audio-only timeline, null when there's nothing to play. */
         val previewTrackKind: TrackKind?,
         val canUndo: Boolean = false,
         val canRedo: Boolean = false,
@@ -140,6 +159,7 @@ public class EditorViewModel(
     repository: ProjectRepository,
     createController: (CoroutineScope) -> PreviewController,
     private val autosave: ProjectAutosave,
+    private val waveforms: WaveformSource = WaveformSource.NONE,
     private val newClipId: () -> ClipId = { ClipId(UUID.randomUUID().toString()) },
 ) : ViewModel() {
 
@@ -163,10 +183,18 @@ public class EditorViewModel(
     private var drag: Drag? = null
     private var latestProject: Project? = null
 
+    /** Waveforms measured so far. Each one arriving updates the timeline drawing and the preview's mix headroom. */
+    private val analysed = MutableStateFlow<Map<MediaId, Waveform>>(emptyMap())
+    private val analysisRequested = HashSet<MediaId>()
+
     /** UI state plus the matching preview plan. The plan goes to the controller, not the UI. */
     private class Built(val state: EditorUiState, val plan: PreviewPlan?, val persisted: Timeline? = null)
 
-    private val projectAndSelection = combine(repository.project(projectId), selectedId) { project, selected -> project to selected }
+    private val projectAndSelection = combine(repository.project(projectId), selectedId, analysed) { project, selected, peaks ->
+        ProjectView(project, selected, peaks)
+    }
+
+    private data class ProjectView(val project: Project?, val selected: String?, val waveforms: Map<MediaId, Waveform>)
     private val editingState = combine(draft, pendingSave, history, message, autosave.status) { d, p, h, m, a ->
         EditingState(d, p, h, m, a)
     }
@@ -179,17 +207,18 @@ public class EditorViewModel(
         val autosave: ProjectAutosave.Status,
     )
 
-    public val uiState: StateFlow<EditorUiState> = combine(projectAndSelection, editingState) { (project, selected), editing ->
+    public val uiState: StateFlow<EditorUiState> = combine(projectAndSelection, editingState) { (project, selected, peaks), editing ->
         latestProject = project
         if (project == null) {
             Built(EditorUiState.NotFound, null)
         } else {
+            requestWaveforms(project)
             val persisted = DefaultArrangement.timelineFor(project)
             val saved = editing.pending ?: persisted
             val shown = editing.draft?.timeline ?: saved
             val mediaById = project.media.associateBy { it.id }
-            val preview = previewPlanFor(saved, mediaById)
-            val tracks = tracksUi(shown, mediaById)
+            val preview = previewPlanFor(saved, project, peaks)
+            val tracks = tracksUi(shown, mediaById, peaks)
             Built(
                 EditorUiState.Ready(
                     projectName = project.name,
@@ -217,8 +246,9 @@ public class EditorViewModel(
     }
         .catch { emit(Built(EditorUiState.LoadFailed, null)) }
         // setPlan is a no-op for an unchanged plan, so selection changes and drags don't reload the player.
+        // An edit keeps the playhead where it is.
         .onEach { built ->
-            built.plan?.let(controller::setPlan)
+            built.plan?.let { controller.setPlan(it, keepPosition = true) }
             // Once the repository holds the pending edit, show the stored copy again (it then reflects outside changes too).
             val pending = pendingSave.value
             if (pending != null && pending == built.persisted) pendingSave.compareAndSet(pending, null)
@@ -283,6 +313,40 @@ public class EditorViewModel(
                 message.value = EditorMessage.HISTORY_OUT_OF_DATE
             }
             HistoryStep.Empty -> Unit
+        }
+    }
+
+    // ---- Audio ----
+
+    /** Sets the clip's volume (0..1), mute and fades as one undoable edit. */
+    public fun setClipAudio(clipId: ClipId, audio: ClipAudio) {
+        execute(EditCommand.SetClipAudio(clipId, audio))
+    }
+
+    /** Sets a whole track's volume (0..1) and mute as one undoable edit. */
+    public fun setTrackAudio(trackId: TrackId, audio: TrackAudio) {
+        execute(EditCommand.SetTrackAudio(trackId, audio))
+    }
+
+    /** Moves a clip to another audio track (Music or Voiceover), as close to its current time as fits. */
+    public fun moveClipToTrack(clipId: ClipId, trackId: TrackId) {
+        val clip = currentTimeline()?.findClip(clipId) ?: return
+        execute(EditCommand.MoveToTrack(clipId, trackId, clip.startUs))
+    }
+
+    /** Starts measuring every audio-bearing file once. Results arrive through [analysed]. */
+    private fun requestWaveforms(project: Project) {
+        project.media.filter { it.hasAudio && it.id !in analysisRequested }.forEach { media ->
+            analysisRequested += media.id
+            val cached = waveforms.cached(media)
+            if (cached != null) {
+                analysed.value = analysed.value + (media.id to cached)
+            } else {
+                viewModelScope.launch {
+                    val waveform = waveforms.load(media) ?: return@launch
+                    analysed.value = analysed.value + (media.id to waveform)
+                }
+            }
         }
     }
 
@@ -379,7 +443,7 @@ public class EditorViewModel(
     private fun editContext(): EditContext? {
         val project = latestProject ?: return null
         return EditContext(
-            media = project.media.associate { it.id to MediaBounds(it.kind, it.durationUs) },
+            media = project.media.associate { it.id to MediaBounds(it.kind, it.durationUs, it.hasAudio) },
             newClipId = newClipId,
         )
     }
@@ -396,7 +460,8 @@ public class EditorViewModel(
             is EditResult.Rejected -> message.value = when (result.reason) {
                 EditRejection.TOO_CLOSE_TO_EDGE -> EditorMessage.SPLIT_TOO_CLOSE
                 EditRejection.OUTSIDE_CLIP -> EditorMessage.NOTHING_TO_SPLIT
-                EditRejection.NO_CHANGE -> EditorMessage.NO_GAPS
+                EditRejection.NO_CHANGE -> if (command is EditCommand.CloseGaps) EditorMessage.NO_GAPS else null
+                EditRejection.NO_AUDIO -> EditorMessage.CLIP_HAS_NO_AUDIO
                 else -> null
             }
         }
@@ -408,13 +473,15 @@ public class EditorViewModel(
         autosave.schedule(projectId, timeline)
     }
 
-    private fun tracksUi(timeline: Timeline, mediaById: Map<MediaId, MediaRef>): List<TimelineTrackUi> =
+    private fun tracksUi(timeline: Timeline, mediaById: Map<MediaId, MediaRef>, peaks: Map<MediaId, Waveform>): List<TimelineTrackUi> =
         timeline.tracks.map { track ->
             TimelineTrackUi(
                 id = track.id,
                 kind = track.kind,
                 magnetic = timeline.isMagnetic(track.id),
                 hasGaps = TimelineEditor.hasGaps(track),
+                audio = track.audio,
+                role = track.role,
                 clips = track.clips.mapNotNull { clip ->
                     val media = mediaById[clip.mediaId] ?: return@mapNotNull null
                     TimelineClipUi(
@@ -426,6 +493,9 @@ public class EditorViewModel(
                         uri = media.uri,
                         mediaKind = media.kind,
                         title = media.tags?.title?.takeIf { media.kind == MediaKind.AUDIO } ?: media.displayName.orEmpty(),
+                        hasAudio = media.hasAudio,
+                        audio = clip.audio,
+                        waveform = peaks[media.id],
                     )
                 },
             )
@@ -437,33 +507,31 @@ public class EditorViewModel(
 }
 
 /**
- * The preview plan for [timeline]. The preview plays a single track:
- * - the main video track when it has clips
- * - otherwise the first audio track
+ * The preview plan for [timeline]: the same render plan export uses
+ * ([ExportPlanner]), played with Media3's CompositionPlayer. Every audio
+ * track is mixed at its timeline position, with volume, mute, fades and the
+ * mix headroom, so what you hear is what export writes.
  *
- * Other tracks are not mixed in yet, because the preview has no multi-track
- * compositing or audio mixing. Photos become still segments.
- *
- * Returns null when there's nothing to play, or when the chosen track has
- * gaps. The magnetic main track never has gaps. An audio-only project whose
- * audio track has gaps can't be previewed until they're closed.
+ * - Rendered at the canvas's shape, at most [PREVIEW_SHORT_SIDE_PX] on the
+ *   short side, to keep the preview light. Export uses the size chosen there.
+ * - An audio-only timeline still plays (export would refuse it).
+ * - Returns null when there's nothing to play, or a file is unavailable.
  */
-internal fun previewPlanFor(timeline: Timeline, mediaById: Map<MediaId, MediaRef>): Pair<TrackKind, PreviewPlan>? {
-    val track = timeline.mainTrack?.takeIf { it.clips.isNotEmpty() }
-        ?: timeline.tracks.firstOrNull { it.kind == TrackKind.AUDIO && it.clips.isNotEmpty() }
-        ?: return null
-    var expectedStart = 0L
-    val segments = track.clips.map { clip ->
-        if (clip.startUs != expectedStart) return null
-        expectedStart = clip.endUs
-        val media = mediaById[clip.mediaId] ?: return null
-        PreviewSegment(
-            uri = media.uri,
-            sourceStartUs = clip.sourceInUs,
-            durationUs = clip.durationUs,
-            clipped = media.kind != MediaKind.IMAGE,
-            still = media.kind == MediaKind.IMAGE,
-        )
-    }
-    return track.kind to PreviewPlan(segments)
+internal fun previewPlanFor(timeline: Timeline, project: Project, waveforms: Map<MediaId, Waveform>): Pair<TrackKind, PreviewPlan>? {
+    val settings = project.settings
+    val size = ExportOptions.resolutionsFor(settings.canvasWidthPx, settings.canvasHeightPx)
+        .firstOrNull { it.shortSidePx <= PREVIEW_SHORT_SIDE_PX }
+        ?: ExportOptions.resolutionsFor(settings.canvasWidthPx, settings.canvasHeightPx).last()
+    val result = ExportPlanner.plan(
+        timeline = timeline,
+        media = project.media,
+        settings = ExportSettings(size.widthPx, size.heightPx, settings.frameRate),
+        waveforms = waveforms::get,
+        requireVideo = false,
+    )
+    val plan = (result as? ExportPlanResult.Ready)?.plan ?: return null
+    return (if (plan.video.isNotEmpty()) TrackKind.VIDEO else TrackKind.AUDIO) to PreviewPlan.forTimeline(plan)
 }
+
+/** The preview renders at most this many pixels on its short side. */
+internal const val PREVIEW_SHORT_SIDE_PX = 720

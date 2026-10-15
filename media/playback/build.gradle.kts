@@ -9,6 +9,10 @@ android {
 
 dependencies {
     api(projects.core.model)
+    // The editor preview plays the shared render plan with CompositionPlayer.
+    api(projects.core.timeline)
+    implementation(projects.media.render)
+    implementation(libs.androidx.media3.transformer)
     implementation(projects.core.designsystem)
     // Player appears in this module's public API (PreviewController.player).
     api(libs.androidx.media3.exoplayer)

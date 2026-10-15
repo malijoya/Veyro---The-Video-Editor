@@ -24,8 +24,8 @@ import kotlinx.coroutines.launch
  *   system. The next [attach] restores both.
  * - [release] is final. Call it from `ViewModel.onCleared`.
  *
- * [setPlan] switches media in place. The engine is reused, and the old
- * position is dropped.
+ * [setPlan] switches media in place. The engine is reused. The old position
+ * is dropped, unless the caller keeps it (an edit to the same timeline).
  *
  * Positions come from the engine on events, and are polled every
  * [positionPollIntervalMs] only while playing. All calls must be on the main
@@ -53,17 +53,24 @@ public class PreviewController(
 
     public val isAttached: Boolean get() = engine != null
 
-    public fun setPlan(newPlan: PreviewPlan) {
+    /**
+     * Plays [newPlan] instead. With [keepPosition], playback resumes at the
+     * same time (clamped to the new length), paused. That's for edits: a
+     * volume change shouldn't send the playhead back to 0.
+     */
+    public fun setPlan(newPlan: PreviewPlan, keepPosition: Boolean = false) {
         check(!released) { "Controller was released" }
         if (newPlan == plan) return
+        val position = if (keepPosition) _state.value.positionUs.coerceIn(0, newPlan.durationUs) else 0
         plan = newPlan
-        savedPositionUs = 0
+        savedPositionUs = position
         savedPlayWhenReady = false
         _state.value = PreviewState(
             status = if (engine != null) PreviewStatus.LOADING else PreviewStatus.IDLE,
+            positionUs = position,
             durationUs = newPlan.durationUs,
         )
-        engine?.let { load(it, newPlan, positionUs = 0, playWhenReady = false) }
+        engine?.let { load(it, newPlan, positionUs = position, playWhenReady = false) }
     }
 
     public fun attach() {
@@ -155,6 +162,13 @@ public class PreviewController(
 
     private fun load(target: PlaybackEngine, plan: PreviewPlan, positionUs: Long, playWhenReady: Boolean) {
         val location = plan.locate(positionUs.coerceIn(0, plan.durationUs))
+        val render = plan.render
+        if (render != null) {
+            target.loadTimeline(render, location.offsetUs / 1_000)
+            if (playWhenReady) target.play() else target.pause()
+            refresh()
+            return
+        }
         target.load(
             items = plan.segments.map { segment ->
                 if (segment.still) {

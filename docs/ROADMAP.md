@@ -178,12 +178,84 @@ Original scope:
   filmstrip thumbnails.
 - Gestures for trim, split, move and delete, connected to M1 commands and undo.
 
-## M6 — Export (`:media:export`)
+## M6 — Export (`:media:export`, `:feature:export`) (first pipeline code complete 2026-10-15, awaiting build and device run)
+- **Done:**
+  - `ExportPlanner` (JVM): clip order, exact source ranges, photos, and the
+    audio track with gaps, trimmed to the video. Blocks missing media,
+    out-of-range clips and empty main tracks. Warns about effects and extra
+    tracks.
+  - Media3 Transformer 1.11.1 export: H.264/AAC MP4 at the chosen size
+    (letterboxed) and frame rate. Audio normalized to 16-bit stereo for
+    mixing.
+  - Real progress from `getProgress`, cancel (codecs freed, partial file
+    deleted), and errors mapped from `ExportException` codes, plus storage
+    full and save failures.
+  - Output verification (tracks, duration, frame decode) before anything is
+    saved or reported as done.
+  - Destinations: gallery (MediaStore Movies/Veyro, Android 10+) or the
+    system file picker.
+  - Export screen with completion (play, share, size, length, codecs) and
+    failure (reason, retry). Export button in the editor.
+- **Tests:**
+  - JVM: planner (order, ranges, gaps, trimming, blockers, warnings, fps
+    rounding, size options), pipeline (success only after verification,
+    renderer lies, empty files, failed verification, failed or full copy,
+    free-space check, cancellation cleanup), export ViewModel.
+  - Instrumented (`Media3ExportInstrumentedTest`): real Transformer export of
+    generated MP4/PNG/WAV media with clipping, a photo, gaps and mixed
+    sample rates and channels. The output is probed with `MediaExtractor` and
+    played to the end with ExoPlayer. Also covers portrait size, a missing
+    source and cancellation. Needs a device run.
+- **Still open:** foreground-service export, bitrate presets, encoder
+  capability checks before starting, and preview/export parity for the
+  audio track. See "Not supported yet" in ARCHITECTURE.md.
+
+Original scope:
 - Transformer `Composition` built from the same evaluator. Resolution, frame
   rate and bitrate presets.
 - Check device encoder capabilities and fall back. Foreground service with real
   progress and cancel. Save to `MediaStore`.
 - **Acceptance:** exported file duration and frame count match the timeline.
+
+## M6.5 — Audio tracks (code complete 2026-10-15, awaiting build and device run)
+- **Done:**
+  - Clip volume (0–100%), mute, fade-in and fade-out. Track volume and mute.
+    Music and Voiceover tracks, and moving audio between them.
+  - Gain keyframes in the model (source-anchored, rendered), ready for a
+    keyframe editor.
+  - Schema v5, with the audio fields optional on the v4 shape.
+  - The editor preview now plays the whole timeline with
+    `CompositionPlayer`, from the same plan and composition as export:
+    every track mixed, with gains, at their positions.
+  - Real waveforms (MediaCodec decode, 20 ms peaks, memory and disk cache)
+    drawn on audio clips and under video clips with sound, with the gain
+    line.
+  - Clipping prevention: peak-based mix headroom before Media3's 16-bit
+    mixer.
+  - Missing audio streams handled: no controls, or silence if the stream
+    vanished.
+- **Tests:**
+  - JVM: gain envelope (fades, overlap, mute, keyframes); waveform builder
+    and cache format; audio commands, split behaviour, and undo/redo of
+    sound edits and moves between tracks in both directions; planner sync
+    positions, gaps, cuts, mutes, multiple tracks, overlaps and headroom;
+    mix headroom (only overlaps, smoothness, early attack); controller
+    keeps position on edits; ViewModels (preview reflects edits, mute
+    removes a track, waveforms analysed once, export measures audio
+    first); schema v5 round trip.
+  - Instrumented (`AudioExportInstrumentedTest`): exported audio decoded
+    back to PCM, then measured:
+    - onsets at timeline positions, trimmed source ranges
+    - fade ramps at 25% and 75%
+    - 50% volume
+    - muted track silent
+    - two loud overlapping tracks with no clipped samples
+    - silence for a vanished audio stream
+  - Instrumented (`CompositionPreviewInstrumentedTest`): the editor preview
+    engine plays a mixed timeline to the end.
+  - All of these need a build and a device run.
+- **Still open:** keyframe editing UI, voiceover recording, volume boost
+  with a limiter, ducking.
 
 ## M7+ — Creative features
 Each item follows the model → evaluator → playback and export pattern:

@@ -18,6 +18,15 @@ import com.editor.veyro.media.playback.EngineItem
 import com.editor.veyro.media.playback.EngineStatus
 import com.editor.veyro.media.playback.PlaybackEngine
 import com.editor.veyro.media.playback.PreviewController
+import com.editor.veyro.core.timeline.export.ExportPlan
+import com.editor.veyro.core.timeline.export.AudioSegment
+import com.editor.veyro.core.model.audio.ClipAudio
+import com.editor.veyro.core.model.audio.TrackAudio
+import com.editor.veyro.core.model.audio.AudioRole
+import com.editor.veyro.core.model.audio.Waveform
+import com.editor.veyro.core.model.audio.WaveformBuilder
+import com.editor.veyro.core.model.audio.WaveformSource
+import com.editor.veyro.core.model.project.AudioTrackInfo
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
@@ -58,9 +67,17 @@ class EditorViewModelTest {
         override val hasVideo = true
         override val errorCode: Int? = null
         val loads = mutableListOf<List<EngineItem>>()
+
+        /** Timelines loaded for playback, as the composition engine would get them. */
+        val timelines = mutableListOf<ExportPlan>()
+        val timelineStarts = mutableListOf<Long>()
         override fun setListener(listener: (() -> Unit)?) = Unit
         override fun load(items: List<EngineItem>, startIndex: Int, startPositionMs: Long) {
             loads += items
+        }
+        override fun loadTimeline(plan: ExportPlan, startPositionMs: Long) {
+            timelines += plan
+            timelineStarts += startPositionMs
         }
         override fun play() {
             playWhenReady = true
@@ -115,7 +132,11 @@ class EditorViewModelTest {
     private val engines = mutableListOf<RecordingEngine>()
     private var nextClip = 0
 
-    private fun TestScope.viewModel(repository: ProjectRepository, saved: SavedStateHandle = SavedStateHandle()): EditorViewModel {
+    private fun TestScope.viewModel(
+        repository: ProjectRepository,
+        saved: SavedStateHandle = SavedStateHandle(),
+        waveforms: WaveformSource = WaveformSource.NONE,
+    ): EditorViewModel {
         val vm = EditorViewModel(
             savedState = saved,
             projectId = ProjectId("p"),
@@ -123,6 +144,7 @@ class EditorViewModelTest {
             createController = { scope -> PreviewController({ RecordingEngine().also { engines += it } }, scope) },
             // No debounce in tests: each edit is written as soon as it's made.
             autosave = ProjectAutosave(repository, kotlinx.coroutines.CoroutineScope(UnconfinedTestDispatcher(testScheduler)), delayMs = 0),
+            waveforms = waveforms,
             newClipId = { ClipId("split-${nextClip++}") },
         )
         backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.uiState.collect {} }
@@ -147,13 +169,13 @@ class EditorViewModelTest {
         assertEquals(TrackKind.VIDEO, state.previewTrackKind)
 
         vm.controller.attach()
-        assertEquals(
-            listOf(
-                EngineItem("content://v", clipStartMs = 0, clipEndMs = 2_000),
-                EngineItem("content://img", clipStartMs = 0, clipEndMs = null, stillDurationMs = DefaultArrangement.PHOTO_DURATION_US / 1_000),
-            ),
-            engines.single().loads.single(),
-        )
+        // The whole timeline is played as one composition: the same plan export renders.
+        val plan = engines.single().timelines.single()
+        assertEquals(listOf("content://v", "content://img"), plan.video.map { it.uri })
+        assertEquals(listOf(2_000_000L, DefaultArrangement.PHOTO_DURATION_US), plan.video.map { it.durationUs })
+        // The song is mixed in on the music track, cut at the end of the picture.
+        assertEquals(1, plan.audioTracks.size)
+        assertEquals(plan.durationUs, plan.audioTracks.single().sumOf { it.durationUs })
     }
 
     @Test
@@ -189,9 +211,9 @@ class EditorViewModelTest {
         assertTrue(vm.ready().canUndo)
 
         // The preview plays both parts back to back, covering the same source range.
-        val items = engines.single().loads.last()
-        assertEquals(2, items.size)
-        assertEquals(items[0].clipEndMs, items[1].clipStartMs)
+        val parts = engines.single().timelines.last().video
+        assertEquals(2, parts.size)
+        assertEquals(parts[0].sourceEndUs, parts[1].sourceStartUs)
     }
 
     @Test
@@ -236,7 +258,7 @@ class EditorViewModelTest {
         val repository = FakeRepository(project(media("v", MediaKind.VIDEO, 4_000_000), media("w", MediaKind.VIDEO, 3_000_000)))
         val vm = viewModel(repository)
         vm.controller.attach()
-        val loadsBefore = engines.single().loads.size
+        val loadsBefore = engines.single().timelines.size
 
         vm.beginDrag(ClipId("clip-v"), DragHandle.END)
         assertEquals(ClipId("clip-v"), vm.ready().selectedClip?.id) // Starting a drag selects the clip.
@@ -247,7 +269,7 @@ class EditorViewModelTest {
         assertEquals(2_500_000L, draft.main().clips[0].durationUs)
         assertEquals(2_500_000L, draft.main().clips[1].startUs) // The magnetic track follows live.
         assertEquals(0, repository.timelineSaves) // Nothing is saved mid-drag...
-        assertEquals(loadsBefore, engines.single().loads.size) // ...and the player isn't reloaded.
+        assertEquals(loadsBefore, engines.single().timelines.size) // ...and the player isn't reloaded.
 
         vm.endDrag()
         assertFalse(vm.ready().isDragging)
@@ -412,6 +434,100 @@ class EditorViewModelTest {
             assertEquals("zoom $pxPerSecond", 6_000_000L, dragEndTo(20.0))
             assertNull("zoom $pxPerSecond", dragEndTo(30.0))
         }
+    }
+
+    // ---------------- Audio ----------------
+
+    private fun music() = media("song", MediaKind.AUDIO, 6_000_000)
+    private fun camera(durationUs: Long = 4_000_000) = media("cam", MediaKind.VIDEO, durationUs).copy(audio = AudioTrackInfo("audio/mp4a-latm", 48_000, 2, null))
+    private fun EditorUiState.Ready.music() = tracks.first { it.role == AudioRole.MUSIC }
+    private fun EditorUiState.Ready.voice() = tracks.first { it.role == AudioRole.VOICEOVER }
+
+    @Test
+    fun `clip volume and fades change what the preview plays, and undo restores it`() = runTest {
+        val repository = FakeRepository(project(camera(), music()))
+        val vm = viewModel(repository)
+        vm.controller.attach()
+        val song = vm.ready().music().clips.single()
+
+        vm.setClipAudio(song.id, ClipAudio(volume = 0.5f, fadeInUs = 1_000_000))
+        assertEquals(ClipAudio(volume = 0.5f, fadeInUs = 1_000_000), vm.ready().music().clips.single().audio)
+        val gain = (engines.single().timelines.last().audioTracks.single().first() as AudioSegment.Clip).gain
+        assertEquals(0f, gain.gainAt(0), 0f)
+        assertEquals(0.5f, gain.envelope.gainAt(2_000_000), 1e-4f)
+        assertEquals(ClipAudio(volume = 0.5f, fadeInUs = 1_000_000), repository.saved.value.single().timeline!!.findClip(song.id)!!.audio)
+
+        vm.undo()
+        assertEquals(ClipAudio.DEFAULT, vm.ready().music().clips.single().audio)
+        // Back to the clip's own unity envelope. (The mix headroom still applies, since camera sound and music overlap.)
+        assertTrue((engines.single().timelines.last().audioTracks.single().first() as AudioSegment.Clip).gain.envelope.isUnity)
+    }
+
+    @Test
+    fun `muting a track takes it out of the preview mix`() = runTest {
+        val vm = viewModel(FakeRepository(project(camera(), music())))
+        vm.controller.attach()
+        assertEquals(1, engines.single().timelines.last().audioTracks.size)
+        vm.setTrackAudio(vm.ready().music().id, TrackAudio(muted = true))
+        assertTrue(vm.ready().music().audio.muted)
+        assertTrue(engines.single().timelines.last().audioTracks.isEmpty())
+        // The camera's own sound is still there.
+        assertTrue(engines.single().timelines.last().includeClipAudio)
+    }
+
+    @Test
+    fun `a sound edit keeps the playhead where it was`() = runTest {
+        val vm = viewModel(FakeRepository(project(camera(), music())))
+        vm.controller.attach()
+        vm.controller.seekTo(1_500_000)
+        vm.setClipAudio(vm.ready().music().clips.single().id, ClipAudio(volume = 0.3f))
+        assertEquals(1_500L, engines.single().timelineStarts.last())
+    }
+
+    @Test
+    fun `audio moves to the voiceover track and plays from there at the same time`() = runTest {
+        val vm = viewModel(FakeRepository(project(camera(6_000_000), music())))
+        vm.controller.attach()
+        val song = vm.ready().music().clips.single()
+        vm.moveClipToTrack(song.id, vm.ready().voice().id)
+        assertTrue(vm.ready().music().clips.isEmpty())
+        assertEquals(song.startUs, vm.ready().voice().clips.single().startUs)
+        assertEquals(1, engines.single().timelines.last().audioTracks.size)
+        vm.undo()
+        assertEquals(listOf(song.id), vm.ready().music().clips.map { it.id })
+    }
+
+    @Test
+    fun `clips without sound get no audio controls and audio edits on them are refused`() = runTest {
+        val vm = viewModel(FakeRepository(project(media("v", MediaKind.VIDEO), media("img", MediaKind.IMAGE))))
+        val clips = vm.ready().main().clips
+        assertTrue(clips.none { it.hasAudio })
+        vm.setClipAudio(clips[0].id, ClipAudio(volume = 0.5f))
+        assertEquals(EditorMessage.CLIP_HAS_NO_AUDIO, vm.ready().message)
+        assertFalse(vm.ready().canUndo)
+    }
+
+    @Test
+    fun `measured waveforms reach the timeline and the preview's mix headroom`() = runTest {
+        val peaks = WaveformBuilder().apply { for (i in 0 until 300) addFloat(floatArrayOf(0.9f), 1, 1, 50, i * 20_000L) }.build()
+        val requested = mutableListOf<String>()
+        val source = object : WaveformSource {
+            override fun cached(media: MediaRef): Waveform? = null
+            override suspend fun load(media: MediaRef): Waveform? {
+                requested += media.id.value
+                return peaks
+            }
+        }
+        val vm = viewModel(FakeRepository(project(camera(), music(), media("img", MediaKind.IMAGE))), waveforms = source)
+        vm.controller.attach()
+        // Only files with sound are analysed, once each.
+        assertEquals(setOf("cam", "song"), requested.toSet())
+        assertEquals(2, requested.size)
+        assertEquals(peaks, vm.ready().music().clips.single().waveform)
+        assertEquals(peaks, vm.ready().main().clips.first { it.title == "cam.file" }.waveform)
+        // Camera sound and music overlap at 0.9 each: the preview mix is turned down there.
+        val plan = engines.single().timelines.last()
+        assertFalse(plan.video.first().audio!!.isUnity)
     }
 
     private companion object {

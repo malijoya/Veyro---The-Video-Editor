@@ -1,5 +1,7 @@
 package com.editor.veyro.feature.editor
 
+import com.editor.veyro.core.model.audio.TrackAudio
+import com.editor.veyro.core.model.audio.ClipAudio
 import android.os.SystemClock
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
@@ -86,7 +88,7 @@ import com.editor.veyro.media.playback.ui.PreviewSurface
 private const val SCRUB_SEEK_INTERVAL_MS = 80L
 
 @Composable
-public fun EditorRoute(viewModel: EditorViewModel, onBack: () -> Unit) {
+public fun EditorRoute(viewModel: EditorViewModel, onBack: () -> Unit, onExport: () -> Unit = {}) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val playback by viewModel.controller.state.collectAsStateWithLifecycle()
     val player by viewModel.controller.player.collectAsStateWithLifecycle()
@@ -103,6 +105,12 @@ public fun EditorRoute(viewModel: EditorViewModel, onBack: () -> Unit) {
         viewport = viewport,
         surface = { modifier -> PreviewSurface(player, modifier) },
         onBack = onBack,
+        onExport = {
+            // Write pending edits first, so the export reads the timeline the user sees.
+            viewModel.controller.pause()
+            viewModel.flush()
+            onExport()
+        },
         onPlayPause = viewModel.controller::togglePlayPause,
         onSelectClip = viewModel::selectClip,
         onScrubStart = viewModel.controller::pause,
@@ -129,6 +137,9 @@ public fun EditorRoute(viewModel: EditorViewModel, onBack: () -> Unit) {
             onUndo = viewModel::undo,
             onRedo = viewModel::redo,
             onMessageShown = viewModel::messageShown,
+            onSetClipAudio = viewModel::setClipAudio,
+            onSetTrackAudio = viewModel::setTrackAudio,
+            onMoveToTrack = viewModel::moveClipToTrack,
         ),
     )
 }
@@ -146,6 +157,9 @@ internal class EditActions(
     val onUndo: () -> Unit,
     val onRedo: () -> Unit,
     val onMessageShown: () -> Unit,
+    val onSetClipAudio: (ClipId, ClipAudio) -> Unit = { _, _ -> },
+    val onSetTrackAudio: (TrackId, TrackAudio) -> Unit = { _, _ -> },
+    val onMoveToTrack: (ClipId, TrackId) -> Unit = { _, _ -> },
 )
 
 /**
@@ -183,6 +197,7 @@ internal fun EditorScreen(
     viewport: TimelineViewportState,
     surface: @Composable (Modifier) -> Unit,
     onBack: () -> Unit,
+    onExport: () -> Unit = {},
     onPlayPause: () -> Unit,
     onSelectClip: (com.editor.veyro.core.model.timeline.ClipId?) -> Unit,
     onScrubStart: () -> Unit,
@@ -206,6 +221,13 @@ internal fun EditorScreen(
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.editor_back))
+                    }
+                },
+                actions = {
+                    if (ready != null && ready.tracks.any { it.magnetic && it.clips.isNotEmpty() }) {
+                        androidx.compose.material3.Button(onClick = onExport, enabled = !ready.isDragging) {
+                            Text(stringResource(R.string.editor_export))
+                        }
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
@@ -253,6 +275,7 @@ private fun EditorMessageEffect(message: EditorMessage?, snackbarHostState: Snac
         EditorMessage.SPLIT_TOO_CLOSE -> stringResource(R.string.editor_msg_split_too_close)
         EditorMessage.NO_GAPS -> stringResource(R.string.editor_msg_no_gaps)
         EditorMessage.HISTORY_OUT_OF_DATE -> stringResource(R.string.editor_msg_history_out_of_date)
+        EditorMessage.CLIP_HAS_NO_AUDIO -> stringResource(R.string.editor_no_audio_stream)
         null -> null
     }
     LaunchedEffect(message) {
@@ -304,7 +327,7 @@ private fun EditorContent(
                     .aspectRatio(state.canvasAspectRatio, matchHeightConstraintsFirst = state.canvasAspectRatio < 1f)
                     .background(Color.Black),
             ) {
-                PreviewStage(state, playback, viewport, surface)
+                PreviewStage(state, playback, surface)
             }
         }
         TransportRow(state, playback, viewport, onPlayPause)
@@ -330,10 +353,11 @@ private fun EditorContent(
                 onDragUpdate = editActions.onDragUpdate,
                 onDragEnd = editActions.onDragEnd,
                 onDragCancel = editActions.onDragCancel,
+                onToggleTrackMute = { track -> editActions.onSetTrackAudio(track.id, track.audio.copy(muted = !track.audio.muted)) },
             )
         }
         EditToolbar(state, editActions)
-        SelectionBar(state, compact, onClearSelection = { onSelectClip(null) }, onJumpTo = onJumpTo)
+        SelectionBar(state, compact, onClearSelection = { onSelectClip(null) }, onJumpTo = onJumpTo, actions = editActions)
     }
 }
 
@@ -353,39 +377,18 @@ private fun SaveStatusLabel(status: SaveStatus) {
     )
 }
 
-/** The preview: the video surface, with a photo drawn on top while the playhead is on a photo clip. */
+/**
+ * The preview: the composition player's output. Photos, videos and the
+ * mixed audio all come from the player, exactly as export renders them.
+ */
 @Composable
 private fun PreviewStage(
     state: EditorUiState.Ready,
     playback: PreviewState,
-    viewport: TimelineViewportState,
     surface: @Composable (Modifier) -> Unit,
 ) {
-    val mainTrack = state.tracks.firstOrNull { it.kind == TrackKind.VIDEO }
-    val clipUnderPlayhead by remember(mainTrack) {
-        derivedStateOf {
-            val time = viewport.playheadUs
-            mainTrack?.clips?.firstOrNull { time >= it.startUs && time < it.endUs }
-                ?: mainTrack?.clips?.lastOrNull()?.takeIf { time >= it.endUs }
-        }
-    }
     when (state.previewTrackKind) {
-        TrackKind.VIDEO -> {
-            surface(Modifier.fillMaxSize())
-            val clip = clipUnderPlayhead
-            if (clip != null && clip.mediaKind == MediaKind.IMAGE) {
-                MediaThumbnail(
-                    uri = clip.uri,
-                    kind = ThumbnailKind.IMAGE,
-                    contentDescription = clip.title,
-                    unavailableDescription = stringResource(R.string.editor_media_unavailable),
-                    contentScale = ContentScale.Fit,
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .background(Color.Black),
-                )
-            }
-        }
+        TrackKind.VIDEO -> surface(Modifier.fillMaxSize())
         TrackKind.AUDIO -> Icon(
             VeyroIcons.MusicNote,
             contentDescription = null,
@@ -505,8 +508,12 @@ private fun SelectionBar(
     compact: Boolean,
     onClearSelection: () -> Unit,
     onJumpTo: (Long) -> Unit,
+    actions: EditActions,
 ) {
     val clip = state.selectedClip
+    val track = state.selectedTrack
+    // The sound panel opens on demand, so the preview keeps its room on small screens.
+    var soundOpen by rememberSaveable { mutableStateOf(false) }
     Surface(color = MaterialTheme.colorScheme.surfaceContainer, modifier = Modifier.fillMaxWidth()) {
         Column(Modifier.padding(horizontal = Layout.screenGutter, vertical = Spacing.sm)) {
             if (clip == null) {
@@ -525,10 +532,26 @@ private fun SelectionBar(
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
+                    if (clip.mediaKind != MediaKind.IMAGE) {
+                        TextButton(onClick = { soundOpen = !soundOpen }) {
+                            Text(stringResource(if (soundOpen) R.string.editor_sound_hide else R.string.editor_sound))
+                        }
+                    }
                     TextButton(onClick = { onJumpTo(clip.startUs) }) { Text(stringResource(R.string.editor_jump_to_clip)) }
                     IconButton(onClick = onClearSelection) {
                         Icon(Icons.Filled.Close, contentDescription = stringResource(R.string.editor_clear_selection))
                     }
+                }
+                if (soundOpen && track != null && clip.mediaKind != MediaKind.IMAGE) {
+                    AudioControls(
+                        clip = clip,
+                        track = track,
+                        tracks = state.tracks,
+                        enabled = !state.isDragging,
+                        onSetClipAudio = actions.onSetClipAudio,
+                        onSetTrackAudio = actions.onSetTrackAudio,
+                        onMoveToTrack = actions.onMoveToTrack,
+                    )
                 }
             }
             if (!compact) {

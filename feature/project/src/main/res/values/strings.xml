@@ -52,7 +52,7 @@
     <string name="project_editor_status_title">Editor</string>
     <string name="project_coming_soon">Editing tools coming soon</string>
     <string name="project_open_editor">Open editor</string>
-    <string name="project_editor_status_message">See your clips on a timeline, scrub and preview the main track. Trimming, splitting, reordering, effects and export are still being built.</string>
+    <string name="project_editor_status_message">See your clips on a timeline, scrub and preview the main track. Trim, split, reorder and export to MP4. Effects are still being built.</string>
     <string name="project_not_found_title">Project not found</string>
     <string name="project_not_found_message">It may have been deleted.</string>
     <string name="project_load_failed_title">Project couldn\'t be loaded</string>

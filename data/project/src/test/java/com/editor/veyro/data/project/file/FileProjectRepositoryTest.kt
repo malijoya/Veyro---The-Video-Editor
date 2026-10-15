@@ -142,7 +142,7 @@ class FileProjectRepositoryTest {
             media = listOf(media("a")),
         )
         val json = ProjectDocumentCodec.encode(project)
-        assertTrue(json.contains("\"schemaVersion\":4"))
+        assertTrue(json.contains("\"schemaVersion\":$CURRENT_SCHEMA_VERSION"))
         assertTrue(json.contains("\"kind\":\"video\""))
         assertEquals(DecodeResult.Ok(project), ProjectDocumentCodec.decode(json))
     }

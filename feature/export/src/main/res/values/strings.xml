@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="export_title">Export video</string>
+    <string name="export_back">Back</string>
+    <string name="export_not_found">Project not found</string>
+    <string name="export_not_found_message">It may have been deleted.</string>
+    <string name="export_summary">%1$s · MP4</string>
+
+    <string name="export_resolution">Resolution</string>
+    <string name="export_resolution_canvas">Canvas · %1$s</string>
+    <string name="export_frame_rate">Frame rate</string>
+    <string name="export_frame_rate_hint">Photos use this rate. Videos are capped at it but never sped up: a slower video keeps its own rate. 29.97 and 23.976 are written as 30 and 24.</string>
+    <string name="export_format_hint">H.264 video with AAC audio. Clip sound, music and voiceover are mixed with their volume, mute and fades. Everything is fitted to the frame, with black bars where the shapes differ.</string>
+    <string name="export_checking_media">Checking source files…</string>
+    <string name="export_cancelled">Export cancelled. Nothing was saved.</string>
+
+    <string name="export_blocker_no_video">Add a video or photo to the main track first. Audio-only export isn\'t supported.</string>
+    <string name="export_blocker_media">These files can\'t be read: %1$s. Import them again, then export.</string>
+    <string name="export_blocker_range">These clips reach past the end of their file (it may have changed): %1$s. Trim them, then export.</string>
+    <string name="export_warning_tracks">Overlay video tracks aren\'t exported yet. The main track and every audio track are.</string>
+    <string name="export_warning_mix_lowered">Where sounds overlap loudly enough to clip, they\'re turned down together just enough to avoid distortion.</string>
+    <string name="export_warning_not_analysed">Some audio couldn\'t be measured, so where it overlaps other sound it\'s treated as full volume and the mix may be quieter there.</string>
+    <string name="export_warning_effects">Clip effects aren\'t rendered yet, so they won\'t appear in the video.</string>
+    <string name="export_warning_audio_trimmed">Audio that runs past the end of the video is cut there.</string>
+
+    <string name="export_save_gallery">Save to gallery</string>
+    <string name="export_save_file">Save to a file…</string>
+
+    <string name="export_stage_preparing">Preparing…</string>
+    <string name="export_stage_analysing">Measuring audio levels…</string>
+    <string name="export_stage_rendering">Rendering video…</string>
+    <string name="export_stage_verifying">Checking the video plays…</string>
+    <string name="export_stage_saving">Saving…</string>
+    <string name="export_percent">%1$d%%</string>
+    <string name="export_keep_open">Keep Veyro open until the export finishes. Leaving this screen cancels it.</string>
+    <string name="export_cancel">Cancel export</string>
+    <string name="export_cancel_title">Cancel export?</string>
+    <string name="export_cancel_message">The video made so far will be deleted.</string>
+    <string name="export_cancel_confirm">Cancel export</string>
+    <string name="export_keep_going">Keep exporting</string>
+
+    <string name="export_done_title">Export complete</string>
+    <string name="export_saved_gallery">Saved to Movies/Veyro</string>
+    <string name="export_saved_file">Saved to the location you chose</string>
+    <string name="export_detail_resolution">Resolution</string>
+    <string name="export_detail_duration">Length</string>
+    <string name="export_detail_size">Size</string>
+    <string name="export_detail_codecs">Format</string>
+    <string name="export_verified">Read back from the saved file: it has a playable video track of the expected length.</string>
+    <string name="export_play">Play</string>
+    <string name="export_share">Share</string>
+    <string name="export_again">Export again</string>
+    <string name="export_done">Done</string>
+    <string name="export_no_player">No app on this device can play the video.</string>
+
+    <string name="export_failed_title">Export failed</string>
+    <string name="export_nothing_saved">No video was saved.</string>
+    <string name="export_try_again">Try again</string>
+    <string name="export_error_source">A source file couldn\'t be read. It may have been moved, deleted, or its permission revoked.</string>
+    <string name="export_error_decoder">This device can\'t decode one of the clips.</string>
+    <string name="export_error_encoder">This device\'s encoder can\'t make this video. Try a lower resolution or frame rate.</string>
+    <string name="export_error_processing">Processing the video or audio failed.</string>
+    <string name="export_error_write">The video file couldn\'t be written.</string>
+    <string name="export_error_invalid">The finished file didn\'t pass the playback check, so it wasn\'t saved.</string>
+    <string name="export_error_storage">Not enough free space. Free some storage or choose a lower resolution.</string>
+    <string name="export_error_save">The video was made but couldn\'t be saved there. Try another location.</string>
+    <string name="export_error_unknown">Something went wrong during export.</string>
+</resources>

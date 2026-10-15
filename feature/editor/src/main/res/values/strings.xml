@@ -15,6 +15,25 @@
 
     <string name="editor_track_video">Video</string>
     <string name="editor_track_audio">Audio</string>
+    <string name="editor_track_music">Music</string>
+    <string name="editor_track_voiceover">Voice</string>
+    <string name="editor_track_muted">Muted</string>
+    <string name="editor_track_sound_on">Sound on</string>
+    <string name="editor_mute_track">Mute track</string>
+    <string name="editor_unmute_track">Unmute track</string>
+    <string name="editor_clip_muted">Muted</string>
+    <string name="editor_sound">Sound</string>
+    <string name="editor_sound_hide">Hide sound</string>
+    <string name="editor_clip_sound">Clip sound</string>
+    <string name="editor_clip_volume">Volume</string>
+    <string name="editor_fade_in">Fade in</string>
+    <string name="editor_fade_out">Fade out</string>
+    <string name="editor_track_sound">%1$s track sound</string>
+    <string name="editor_track_volume">Track volume</string>
+    <string name="editor_move_to_track">Move to %1$s</string>
+    <string name="editor_percent">%1$d%%</string>
+    <string name="editor_seconds">%1$s s</string>
+    <string name="editor_no_audio_stream">This clip has no sound.</string>
     <string name="editor_clip_video">Video clip</string>
     <string name="editor_clip_photo">Photo clip</string>
     <string name="editor_clip_audio">Audio clip</string>
@@ -45,7 +64,8 @@
     <string name="editor_msg_split_too_close">Too close to the clip\'s edge to split.</string>
     <string name="editor_msg_no_gaps">This track has no gaps.</string>
     <string name="editor_msg_history_out_of_date">The timeline changed, so earlier steps can\'t be undone.</string>
-    <string name="editor_export_pending">Export and effects are still being built. The preview plays the main track only.</string>
+    <string name="editor_export_pending">Effects are still being built. The preview plays every track mixed, as export renders it.</string>
+    <string name="editor_export">Export</string>
     <string name="editor_coming_soon">Coming soon</string>
     <string name="editor_saved">Saved</string>
     <string name="editor_saving">Saving…</string>

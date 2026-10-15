@@ -44,15 +44,16 @@ decision changes.
 | `:app` | Android app | exists | Activity, Navigation 3 back stack, adaptive navigation suite, manual DI (`AppContainer`). No business logic. |
 | `:core:model` | JVM | exists | Time base (`TimeUs`, `FrameRate`, `DurationFormat`), `Project`, `MediaRef`, `ProjectName` rules, and the first piece of the timeline: `Timeline`/`Track`/`Clip`, plus `DefaultArrangement`. |
 | `:core:designsystem` | Android + Compose | exists | Dark theme tokens (color, type, spacing, shapes), icons, shared components, `MediaThumbnail` and its `ThumbnailProvider` seam. |
-| `:core:timeline` | JVM | exists | Editing domain: `EditCommand`, `TimelineEditor` (trim, split, move/reorder, delete, close gaps), `Snapper` (edge, playhead and frame snapping, zoom-independent threshold), `TimelinePatch` and `EditHistory` (patch-based undo/redo). |
+| `:core:timeline` | JVM | exists | Editing domain: `EditCommand`, `TimelineEditor` (trim, split, move/reorder, delete, close gaps), `Snapper` (edge, playhead and frame snapping, zoom-independent threshold), `TimelinePatch` and `EditHistory` (patch-based undo/redo). `export.ExportPlanner` turns a timeline into an `ExportPlan` (segments, source ranges, background audio with gaps, settings, warnings and blockers). |
 | `:data:project` | Android | exists | `ProjectRepository`. `FileProjectRepository` stores versioned JSON documents through `ProjectDocumentStore` (safe writes with backup). `RoomProjectIndex` holds list metadata. Also `ProjectAutosave`, `ProjectInterchange` (portable project files), `ProjectFileGateway` (Storage Access Framework) and `SourceReferencePolicy`. |
 | `:media:import` | Android | exists | `MediaProber` (metadata via `MediaExtractor` and `MediaMetadataRetriever`), `MediaMetadataAssembler` (pure merge rules), `MimeTypes`, `MediaAccess` (persisted grants, availability), `ThumbnailLoader` (video frame, image, audio cover art, LRU). Package is `media.importer` because `import` is a Kotlin keyword. |
 | `:feature:library` | Android + Compose | exists | Home and Projects tabs (`LibraryViewModel`). |
 | `:feature:project` | Android + Compose | exists | Media import (pickers, probing, selection, create or add to project) and project overview with missing-media detection. |
 | `:feature:settings` | Android + Compose | exists | Storage, media access, permissions, about. |
-| `:media:playback` | Android + Compose | exists | `PreviewPlan` (segments on one track), `PreviewController` (lifecycle, timing, errors), `PlaybackEngine` with `ExoPlaybackEngine`, preview composables (`PreviewSurface`, `PreviewControls`, `BindPreviewLifecycle`). Holds the preview UI widgets because they bind directly to the Media3 `Player`. |
-| `:media:export` | Android | planned (M6) | Maps the timeline to a Media3 Transformer `Composition`, runs the export, falls back when codecs are unsupported. |
-| `:media:render` | Android | planned (M7+) | OpenGL ES effects and transitions as Media3 `GlEffect`s, shared by playback and export. |
+| `:media:playback` | Android + Compose | exists | `PreviewPlan` (one asset, or a whole timeline's render plan), `PreviewController` (lifecycle, timing, errors), `PlaybackEngine` with `ExoPlaybackEngine` (single assets) and `CompositionPlaybackEngine` (the editor's timeline, every track mixed), preview composables. Holds the preview UI widgets because they bind directly to the Media3 `Player`. |
+| `:media:export` | Android | exists | `ExportPipeline` (render → verify → publish, the only path to a completed export), `CompositionFactory` (plan → Media3 `Composition`), `Media3VideoRenderer` (Transformer, real progress, cancel), `AndroidOutputVerifier` (MediaExtractor + frame decode), `AndroidExportPublisher` (MediaStore or SAF document). |
+| `:feature:export` | Android + Compose | exists | Export screen: size and frame-rate choice, destination, progress, cancel, completion and failure states. |
+| `:media:render` | Android | exists | `CompositionFactory`: the one translation of a render plan into a Media3 `Composition`, used by preview (`CompositionPlayer`) and export (Transformer). Per-item gain through Media3 `GainProcessor`. GL effects and transitions will live here too (M7+). |
 | `:feature:editor` | Android + Compose | exists | Editor screen: preview, timeline UI (ruler, tracks, filmstrips, playhead, zoom), selection, playhead/player sync. |
 
 Modules are created in the milestone that first gives them real code, never
@@ -430,20 +431,172 @@ Project (core:model) ──► TimelineEvaluator (core:timeline)
   cannot be done with MediaCodec/Media3, and only after a license review
   (LGPL-only build, dynamic linking).
 
+## Audio
+
+Checked against the Media3 1.11.1 sources before implementation:
+`CompositionPlayer`, `GainProcessor`, `AudioGraphInput`,
+`AudioGraphInputAudioSink` and `AudioMixingUtil`.
+
+- **Model (`core:model/audio`):**
+  - `ClipAudio` on every clip: volume 0..1, mute, fade-in, fade-out, and
+    gain keyframes. Keyframes are stored, carried through edits and
+    rendered, but not editable in the UI yet.
+  - `TrackAudio` on every track: volume 0..1 and mute.
+  - Audio tracks have an `AudioRole` (MUSIC, VOICEOVER).
+    `DefaultArrangement.withStandardTracks` gives older timelines both
+    tracks without moving clips.
+- **Gain (`GainEnvelope`):** one definition used by preview, export and the
+  waveform drawing:
+  - `volume × trackVolume × linear fades × keyframes`.
+  - Fades that overlap shrink in proportion, so they always fit.
+  - There is no boost above 100%, so one clip can't push itself into
+    clipping.
+- **Keyframes in source time:** a keyframe is pinned to a moment in the
+  media file, not to the clip's edges. Trims don't move it, and after a
+  split each part keeps the keyframes inside its own range. On split, the
+  left part keeps the fade-in and the right part keeps the fade-out.
+- **Edits:** `SetClipAudio`, `SetTrackAudio` and `MoveToTrack` (Music ↔
+  Voiceover) are ordinary commands, so undo/redo works for them.
+  `TimelinePatch` stores track setting changes too. When a patch is
+  applied, every removal happens before any addition, so a clip moving
+  between tracks is never on both at once.
+- **Sync:** every audio track becomes its own `EditedMediaItemSequence`,
+  with gaps for silence. All sequences start at time 0, so each sound plays
+  at its timeline position. The video's own sound plays in the main
+  sequence, in step with its frames.
+- **Gain in Media3:**
+  - Each item gets a `GainProcessor` fed by its `SegmentGain`.
+  - Media3 positions per-item audio processors from the clipped item's
+    start. Transformer passes offset 0 at the item start, and
+    CompositionPlayer passes `presentationTime − item start`, including after
+    seeks. So a fade lands in the same place in both.
+  - Items at unity gain skip the processor and stay bit-exact.
+- **Clipping:** Media3 mixes 16-bit PCM and saturates the sum, so a limiter
+  after the mix would be too late. Instead `MixHeadroom` works before the
+  mix:
+  - From each file's measured peaks, it sums `gain × peak` per 20 ms window.
+  - Where the sum would pass full scale, all sources are turned down
+    together to −0.45 dBFS.
+  - Gain drops ahead of the overlap, starting 40 ms early (the whole timeline
+    is known), and comes back over 200 ms.
+  - A single source is never touched.
+  - Media that hasn't been analysed counts as full scale, and export
+    analyses every file first.
+- **Waveforms:**
+  - `WaveformLoader` decodes the first audio stream with
+    `MediaExtractor`/`MediaCodec` and records the 20 ms peaks, rounded up.
+  - Results are cached in memory and in `cacheDir/waveforms`, keyed by URI,
+    size and duration.
+  - The timeline draws the real peaks scaled by the clip's gain, plus the
+    gain line (fades show as ramps).
+  - Video clips with sound get a waveform band under their filmstrip.
+  - Without a waveform, nothing is made up: only the gain line is drawn.
+- **Preview:** the editor plays the same render plan with `CompositionPlayer`
+  (`CompositionPlaybackEngine`), so volume, mute, fades, mixing and photos
+  match export.
+  - An edit reloads the composition at the same position.
+  - The preview renders at most 720 px on the short side.
+- **Missing audio streams:**
+  - A video without an audio stream contributes no audio, and its sound
+    controls are replaced by a note.
+  - If a file loses its stream after import, Media3 generates silence for it
+    (the sequence declares an audio track), and export still completes.
+
+## Export (M6)
+
+```
+Timeline ──► ExportPlanner (core:timeline, JVM) ──► ExportPlan
+                                                     │
+ExportPipeline (media:export):  render ──► verify ──► publish ──► Completed
+                                Media3VideoRenderer  AndroidOutputVerifier  AndroidExportPublisher
+```
+
+Checked against the Media3 1.11.1 sources and the Transformer guides
+(getting started, supported formats, composition) before implementation.
+
+- **Plan:** the main track in order, each clip with its exact source range,
+  and the first audio track with its gaps, padded or cut to the video's
+  length. Missing files, clips past their source's end, and an empty main
+  track block the export before it starts.
+- **Composition:**
+  - Sequence 1 is the main track. Video clips use `ClippingConfiguration`
+    (µs start and end). Photos get `setImageDurationMs` and an exact
+    `setDurationUs`, plus a frame rate.
+  - Sequence 1 includes audio only if some clip has sound; Transformer then
+    fills photos and silent clips with silence.
+  - Sequence 2 is the audio track, using `addGap` for silence.
+  - Every audio item is converted to 16-bit stereo PCM. Transformer requires
+    all audio in a composition to match in sample format and channel count.
+  - A composition-wide `Presentation.createForWidthAndHeight(...,
+    LAYOUT_SCALE_TO_FIT)` sets the size; different shapes get black bars.
+  - Output is H.264 and AAC in MP4. On Android 10+, HDR sources are
+    tone-mapped to SDR so mixed HDR/SDR sequences can export.
+- **Threads:** a Transformer must be used from one Looper thread, and its
+  listener is called there. The renderer runs on the main thread;
+  Transformer's work runs on its own threads.
+- **Progress:** `Transformer.getProgress` is polled every 250 ms. When the
+  state isn't `PROGRESS_STATE_AVAILABLE`, the UI shows an indeterminate bar.
+  Verifying and saving show as named stages without percentages. No progress
+  is ever estimated.
+- **Success:** `Transformer.start` only takes a file path, so output goes to
+  `cacheDir/export` first. The file is then checked:
+  - `MediaExtractor` must find a video track, and an audio track if the plan
+    has sound.
+  - The duration must be within max(0.5 s, 3%) of the plan.
+  - `MediaMetadataRetriever` must decode a frame.
+
+  Only then is the file copied to its destination, and only then does
+  `Completed` appear. Size and duration on the completion screen are read
+  from the file.
+- **Destinations:**
+  - MediaStore `Movies/Veyro`, Android 10+, no permission needed. The entry
+    stays `IS_PENDING` until fully written and is deleted if the copy fails.
+  - A document created with the system file picker, which works on every
+    supported API level.
+- **Cancel and cleanup:** cancelling the coroutine calls
+  `Transformer.cancel()` (frees codecs) and deletes the partial file. The
+  temporary file is deleted on every path, and leftovers from a killed
+  process are cleared at startup. Pending autosave edits are flushed before
+  planning.
+
+### Not supported yet
+
+| Operation | Behaviour today | Why |
+|---|---|---|
+| Background export / leaving the screen | Leaving the export screen cancels the export. The screen stays on while exporting. | Needs a foreground service (`dataSync`/`mediaProcessing` type) owning the Transformer. Planned. |
+| Exact NTSC frame rates (29.97, 23.976, 59.94) | Written as 30, 24 and 60. | `EditedMediaItem.Builder.setFrameRate` takes an `int`. |
+| Raising a video's frame rate | A 24 fps clip stays 24 fps in a 30 fps export. | For video, `setFrameRate` is a maximum: frames are dropped, never duplicated. |
+| Clip effects | Saved but not rendered; the export screen warns. | The effects milestone (M7) adds shared `GlEffect`s. |
+| Overlay video tracks | Ignored, with a warning. | Only the main video track is rendered. Every audio track is mixed. |
+| Volume above 100% | Not offered. | Avoids clipping a single source; a boost would need a limiter that runs before Media3's 16-bit mixer. |
+| Editing gain keyframes | Stored, rendered and carried through edits, but no UI yet. | Planned with the keyframe editor (M7). |
+| Recording a voiceover | Not available; import an audio file and move it to the Voiceover track. | Needs microphone capture (and its permission). |
+| Ducking, EQ, noise reduction, audio effects | Not available. | Not in the model yet. |
+| Audio-only projects | Blocked. | Output must have a video track. |
+| Transitions, crossfades | Not available. | No transition model yet; Media3 Compositions don't support crossfading video or audio tracks. |
+| Speed changes, keyframes, text, stickers | Not available. | Not in the timeline model yet. |
+| Bitrate and codec choice (HEVC, AV1), HDR output | Not offered. H.264/AAC, encoder's default bitrate, SDR. | Picked for compatibility; Transformer may still fall back on devices that can't encode H.264 at the chosen size, and the completion screen shows the size actually written. |
+| More than 6 audio channels | Fails with a processing error. | Media3's default stereo down-mix covers 1–6 input channels. |
+| Clips over GIF or other multi-frame images | First frame only. | `DefaultAssetLoaderFactory` behaviour. |
+| Changed source files (`MediaHealth.CHANGED`) | Exported as stored. Clips past the new end block the export. | Clip timing can't be re-verified against a replaced file. |
+| Headphones unplugged during editor preview | Playback continues. | `CompositionPlayer` has no "becoming noisy" option, unlike ExoPlayer. |
+| HDR in the editor preview | Shown as decoded, without tone-mapping. Export tone-maps to SDR. | CompositionPlayer doesn't support every tone-mapping mode. |
+
 ## Platform concerns (owned by the media and data modules)
 
 - **Storage and permissions:** the system photo picker
   (`PickVisualMedia`/`PickMultipleVisualMedia`, which falls back to a backport
   on older devices) needs no storage permission. `takePersistableUriPermission`
-  is called for SAF URIs. Exports are written through `MediaStore`.
+  is called for SAF URIs. Exports are written through `MediaStore`
+  (Android 10+) or a user-created SAF document.
 - **Codecs:** query `MediaCodecList` and the Media3 encoder selection before
   export, and offer a supported fallback resolution and bitrate. Never assume
   4K/HEVC/HDR support.
 - **Memory:** thumbnails are decoded at display size and cached with bounded
   LRU. There is at most one active decoder pipeline per preview.
-- **Lifecycle:** the player is released in `onStop`. Export runs as a
-  foreground service (user-visible progress, survives navigation) and can be
-  cancelled.
+- **Lifecycle:** the player is released in `onStop`. Export runs in the
+  export screen's ViewModel and can be cancelled. Moving it to a foreground
+  service, so it survives navigation, is still to do.
 
 ## Build conventions
 

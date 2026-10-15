@@ -2,6 +2,7 @@ package com.editor.veyro.media.playback
 
 import com.editor.veyro.core.model.project.MediaKind
 import com.editor.veyro.core.model.project.MediaRef
+import com.editor.veyro.core.timeline.export.ExportPlan
 
 /**
  * One stretch of a source file played back in preview.
@@ -29,17 +30,15 @@ public data class PreviewSegment(
 }
 
 /**
- * What the preview plays: segments back to back on a single track, with time
- * in microseconds.
- *
- * - Today a plan holds one whole asset ([forAsset]).
- * - The timeline milestones will build a plan from a sequence of clips (in/out
- *   points, one after another). The controller already handles several
- *   segments.
- * - This is not multi-layer compositing. Overlapping tracks, transitions and
- *   effects need a compositing renderer that doesn't exist yet.
+ * What the preview plays, with time in microseconds. Two forms:
+ * - [segments] back to back on a single track, played as a playlist. Used
+ *   for one whole asset ([forAsset]).
+ * - A whole timeline ([render], from [forTimeline]): the same render plan
+ *   export uses, played as a Media3 composition, so every track is mixed
+ *   with its volume, fades and mute. [segments] is then a single segment
+ *   spanning the timeline, which keeps the position math uniform.
  */
-public class PreviewPlan(public val segments: List<PreviewSegment>) {
+public class PreviewPlan(public val segments: List<PreviewSegment>, public val render: ExportPlan? = null) {
     init {
         require(segments.isNotEmpty()) { "A preview plan needs at least one segment" }
     }
@@ -79,11 +78,18 @@ public class PreviewPlan(public val segments: List<PreviewSegment>) {
 
     public data class Location(val segmentIndex: Int, val offsetUs: Long)
 
-    override fun equals(other: Any?): Boolean = other is PreviewPlan && other.segments == segments
-    override fun hashCode(): Int = segments.hashCode()
-    override fun toString(): String = "PreviewPlan($segments)"
+    override fun equals(other: Any?): Boolean = other is PreviewPlan && other.segments == segments && other.render == render
+    override fun hashCode(): Int = 31 * segments.hashCode() + render.hashCode()
+    override fun toString(): String = if (render != null) "PreviewPlan(timeline ${render.durationUs} us)" else "PreviewPlan($segments)"
 
     public companion object {
+        /** Plays a whole timeline, every track mixed. Needs an engine that supports [PlaybackEngine.loadTimeline]. */
+        public fun forTimeline(render: ExportPlan): PreviewPlan =
+            PreviewPlan(listOf(PreviewSegment(TIMELINE_URI, sourceStartUs = 0, durationUs = render.durationUs, clipped = true)), render)
+
+        /** Placeholder URI of the single segment of a [forTimeline] plan. Never opened. */
+        internal const val TIMELINE_URI: String = "veyro:timeline"
+
         /**
          * Plays one imported video or audio file from start to end. Images
          * have no playback until they become timeline clips with a duration.

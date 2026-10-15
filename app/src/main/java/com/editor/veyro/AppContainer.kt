@@ -10,7 +10,10 @@ import com.editor.veyro.data.project.file.FileProjectRepository
 import com.editor.veyro.data.project.index.RoomProjectIndex
 import com.editor.veyro.media.importer.MediaAccess
 import com.editor.veyro.media.importer.MediaProber
+import com.editor.veyro.media.export.ExportPipeline
+import com.editor.veyro.media.export.Exports
 import com.editor.veyro.media.importer.ThumbnailLoader
+import com.editor.veyro.media.importer.WaveformLoader
 import java.io.File
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -31,6 +34,9 @@ class AppContainer(context: Context) {
     val mediaProber: MediaProber = MediaProber(appContext, io)
     val thumbnails: ThumbnailLoader = ThumbnailLoader(appContext, io)
 
+    /** Measured audio peaks, cached in memory and on disk. Shared by the editor (drawing, preview mix) and export. */
+    val waveforms: WaveformLoader = WaveformLoader(appContext, io)
+
     /** Folders the system may clear at any time. Projects must never reference files inside them. */
     val sourcePolicy: SourceReferencePolicy = SourceReferencePolicy(
         listOfNotNull(appContext.cacheDir, appContext.externalCacheDir, appContext.codeCacheDir),
@@ -50,6 +56,14 @@ class AppContainer(context: Context) {
     val autosave: ProjectAutosave = ProjectAutosave(projects, appScope)
 
     val projectFiles: ProjectFileGateway = ProjectFileGateway(appContext, io)
+
+    /** Renders, verifies and saves exported videos. Each export screen runs its own. */
+    fun exportPipeline(): ExportPipeline = Exports.pipeline(appContext)
+
+    init {
+        // No export can be running yet, so anything in the export work folder is left over from a killed process.
+        Exports.deleteLeftovers(appContext)
+    }
 
     val versionName: String = try {
         appContext.packageManager.getPackageInfo(appContext.packageName, 0).versionName.orEmpty()

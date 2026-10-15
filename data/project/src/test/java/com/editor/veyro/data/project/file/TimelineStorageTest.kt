@@ -60,7 +60,7 @@ class TimelineStorageTest {
     fun `timeline round-trips through the current document`() {
         val project = Project(ProjectId("p"), "P", 1, 2, listOf(v, song), edited, ProjectSettings(1_080, 1_920, FrameRate.FPS_29_97))
         val json = ProjectDocumentCodec.encode(project)
-        assertTrue(json.contains("\"schemaVersion\":4"))
+        assertTrue(json.contains("\"schemaVersion\":$CURRENT_SCHEMA_VERSION"))
         assertEquals(DecodeResult.Ok(project), ProjectDocumentCodec.decode(json))
     }
 

@@ -39,6 +39,10 @@ data class ProjectKey(val projectId: String) : NavKey
 @Serializable
 data class EditorKey(val projectId: String) : NavKey
 
+/** Export of a project's timeline to an MP4 video. */
+@Serializable
+data class ExportKey(val projectId: String) : NavKey
+
 /** Full-screen preview of one of a project's source assets. */
 @Serializable
 data class PreviewKey(val projectId: String, val mediaId: String) : NavKey

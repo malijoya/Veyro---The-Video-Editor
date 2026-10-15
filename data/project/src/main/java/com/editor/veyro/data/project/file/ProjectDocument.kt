@@ -1,5 +1,10 @@
 package com.editor.veyro.data.project.file
 
+import com.editor.veyro.core.model.audio.AudioRole
+import com.editor.veyro.core.model.audio.ClipAudio
+import com.editor.veyro.core.model.audio.GainInterpolation
+import com.editor.veyro.core.model.audio.GainKeyframe
+import com.editor.veyro.core.model.audio.TrackAudio
 import com.editor.veyro.core.model.project.AudioTrackInfo
 import com.editor.veyro.core.model.project.MediaId
 import com.editor.veyro.core.model.project.MediaKind
@@ -48,11 +53,16 @@ import kotlinx.serialization.json.jsonPrimitive
  * - v4 (2026-10-15): project settings (canvas size, frame rate, snapping,
  *   photo duration), clip effects, and a per-media flag for persisted
  *   access. The frame rate moved from the timeline into settings.
+ * - v5 (2026-10-15): clip audio (volume, mute, fades, gain keyframes), track
+ *   audio (volume, mute) and audio track roles (music, voiceover). These are
+ *   optional fields added to the v4 shape, so v4 documents decode with the
+ *   same classes and get defaults. The version still went up, so older app
+ *   builds refuse v5 files instead of silently dropping audio settings.
  */
 
-internal const val CURRENT_SCHEMA_VERSION = 4
+internal const val CURRENT_SCHEMA_VERSION = 5
 
-// ======================= v4 (current) =======================
+// ======================= v4 / v5 (current) =======================
 
 @Serializable
 internal data class ProjectDocumentV4(
@@ -100,7 +110,46 @@ internal data class MediaDocumentV4(
 internal data class TimelineDocumentV4(val tracks: List<TrackDocumentV4>)
 
 @Serializable
-internal data class TrackDocumentV4(val id: String, val kind: TrackKindV3, val clips: List<ClipDocumentV4>)
+internal data class TrackDocumentV4(
+    val id: String,
+    val kind: TrackKindV3,
+    val clips: List<ClipDocumentV4>,
+    /** v5. */
+    val audio: TrackAudioDocumentV5? = null,
+    /** v5. */
+    val role: AudioRoleV5? = null,
+)
+
+@Serializable
+internal data class TrackAudioDocumentV5(val volume: Float = 1f, val muted: Boolean = false)
+
+@Serializable
+internal enum class AudioRoleV5 {
+    @SerialName("music") MUSIC,
+    @SerialName("voiceover") VOICEOVER,
+}
+
+@Serializable
+internal data class ClipAudioDocumentV5(
+    val volume: Float = 1f,
+    val muted: Boolean = false,
+    val fadeInUs: Long = 0,
+    val fadeOutUs: Long = 0,
+    val keyframes: List<GainKeyframeDocumentV5> = emptyList(),
+)
+
+@Serializable
+internal data class GainKeyframeDocumentV5(
+    val sourceTimeUs: Long,
+    val gain: Float,
+    val interpolation: GainInterpolationV5 = GainInterpolationV5.LINEAR,
+)
+
+@Serializable
+internal enum class GainInterpolationV5 {
+    @SerialName("linear") LINEAR,
+    @SerialName("hold") HOLD,
+}
 
 @Serializable
 internal data class ClipDocumentV4(
@@ -110,6 +159,8 @@ internal data class ClipDocumentV4(
     val sourceInUs: Long,
     val durationUs: Long,
     val effects: List<EffectDocumentV4> = emptyList(),
+    /** v5. Absent means default sound (100%, no fades). */
+    val audio: ClipAudioDocumentV5? = null,
 )
 
 @Serializable
@@ -281,7 +332,8 @@ internal object ProjectDocumentCodec {
         val version = element["schemaVersion"]?.jsonPrimitive?.int ?: error("Missing schemaVersion")
         when {
             version > CURRENT_SCHEMA_VERSION -> DecodeResult.NewerSchema(version)
-            version == 4 -> DecodeResult.Ok(json.decodeFromJsonElement(ProjectDocumentV4.serializer(), element).toModel().validated())
+            // v5 only added optional fields to the v4 shape.
+            version == 5 || version == 4 -> DecodeResult.Ok(json.decodeFromJsonElement(ProjectDocumentV4.serializer(), element).toModel().validated())
             version == 3 -> DecodeResult.Ok(json.decodeFromJsonElement(ProjectDocumentV3.serializer(), element).toModel().validated())
             version == 2 -> DecodeResult.Ok(json.decodeFromJsonElement(ProjectDocumentV2.serializer(), element).toModel())
             version == 1 -> DecodeResult.Ok(json.decodeFromJsonElement(ProjectDocumentV1.serializer(), element).toModel())
@@ -324,6 +376,12 @@ internal object ProjectDocumentCodec {
                     TrackDocumentV4(
                         id = track.id.value,
                         kind = if (track.kind == TrackKind.VIDEO) TrackKindV3.VIDEO else TrackKindV3.AUDIO,
+                        audio = track.audio.takeIf { it != TrackAudio.DEFAULT }?.let { TrackAudioDocumentV5(it.volume, it.muted) },
+                        role = when (track.role) {
+                            AudioRole.MUSIC -> AudioRoleV5.MUSIC
+                            AudioRole.VOICEOVER -> AudioRoleV5.VOICEOVER
+                            null -> null
+                        },
                         clips = track.clips.map { clip ->
                             ClipDocumentV4(
                                 id = clip.id.value,
@@ -332,6 +390,7 @@ internal object ProjectDocumentCodec {
                                 sourceInUs = clip.sourceInUs,
                                 durationUs = clip.durationUs,
                                 effects = clip.effects.map { EffectDocumentV4(it.id, it.type, it.enabled, it.params) },
+                                audio = clip.audio.takeIf { it != ClipAudio.DEFAULT }?.toDocument(),
                             )
                         },
                     )
@@ -339,6 +398,37 @@ internal object ProjectDocumentCodec {
             )
         },
     )
+
+    private fun ClipAudio.toDocument() = ClipAudioDocumentV5(
+        volume = volume,
+        muted = muted,
+        fadeInUs = fadeInUs,
+        fadeOutUs = fadeOutUs,
+        keyframes = keyframes.map {
+            GainKeyframeDocumentV5(
+                it.sourceTimeUs,
+                it.gain,
+                if (it.interpolation == GainInterpolation.HOLD) GainInterpolationV5.HOLD else GainInterpolationV5.LINEAR,
+            )
+        },
+    )
+
+    /** Lenient: out-of-range values from hand-edited files are brought into range instead of failing the whole project. */
+    private fun ClipAudioDocumentV5.toModel() = ClipAudio(
+        volume = unitGain(volume),
+        muted = muted,
+        fadeInUs = fadeInUs.coerceAtLeast(0),
+        fadeOutUs = fadeOutUs.coerceAtLeast(0),
+        keyframes = keyframes
+            .filter { it.sourceTimeUs >= 0 }
+            .sortedBy { it.sourceTimeUs }
+            .distinctBy { it.sourceTimeUs }
+            .map {
+                GainKeyframe(it.sourceTimeUs, unitGain(it.gain), if (it.interpolation == GainInterpolationV5.HOLD) GainInterpolation.HOLD else GainInterpolation.LINEAR)
+            },
+    )
+
+    private fun unitGain(value: Float): Float = if (value.isFinite()) value.coerceIn(0f, 1f) else 1f
 
     private fun MediaRef.toDocument() = MediaDocumentV4(
         id = id.value, uri = uri,
@@ -373,6 +463,12 @@ internal object ProjectDocumentCodec {
                         Track(
                             id = TrackId(track.id),
                             kind = track.kind.toModel(),
+                            audio = track.audio?.let { TrackAudio(unitGain(it.volume), it.muted) } ?: TrackAudio.DEFAULT,
+                            role = when (track.role) {
+                                AudioRoleV5.MUSIC -> AudioRole.MUSIC
+                                AudioRoleV5.VOICEOVER -> AudioRole.VOICEOVER
+                                null -> null
+                            },
                             clips = track.clips.map { clip ->
                                 Clip(
                                     id = ClipId(clip.id),
@@ -381,6 +477,7 @@ internal object ProjectDocumentCodec {
                                     sourceInUs = clip.sourceInUs,
                                     durationUs = clip.durationUs,
                                     effects = clip.effects.map { ClipEffect(it.id, it.type, it.enabled, it.params) },
+                                    audio = clip.audio?.toModel() ?: ClipAudio.DEFAULT,
                                 )
                             },
                         )

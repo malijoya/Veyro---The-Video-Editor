@@ -3,6 +3,7 @@ package com.editor.veyro.feature.editor.timeline
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.offset
@@ -47,6 +48,9 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.rememberTextMeasurer
@@ -59,6 +63,8 @@ import androidx.compose.ui.unit.dp
 import com.editor.veyro.core.designsystem.component.ThumbnailKind
 import com.editor.veyro.core.designsystem.icon.VeyroIcons
 import com.editor.veyro.core.designsystem.theme.Spacing
+import com.editor.veyro.core.model.audio.AudioRole
+import com.editor.veyro.core.model.audio.TrackAudio
 import com.editor.veyro.core.model.project.MediaKind
 import com.editor.veyro.core.model.time.DurationFormat
 import com.editor.veyro.core.model.timeline.ClipId
@@ -111,6 +117,8 @@ public fun TimelineView(
     onDragUpdate: (deltaUs: Long) -> Unit = {},
     onDragEnd: () -> Unit = {},
     onDragCancel: () -> Unit = {},
+    /** Tapping a track's label mutes or unmutes the whole track. */
+    onToggleTrackMute: (TimelineTrackUi) -> Unit = {},
 ) {
     val thumbnails = rememberStripThumbnails()
     val dragStart by rememberUpdatedState(onDragStart)
@@ -139,7 +147,7 @@ public fun TimelineView(
         Row(Modifier.fillMaxWidth()) {
             Column(Modifier.width(metrics.labelWidth)) {
                 Box(Modifier.height(metrics.rulerHeight))
-                tracks.forEach { track -> TrackLabel(track.kind, metrics.trackHeight(track.kind), metrics.labelWidth) }
+                tracks.forEach { track -> TrackLabel(track, metrics.trackHeight(track.kind), metrics.labelWidth, onToggleTrackMute) }
             }
             val backLabel = stringResource(R.string.editor_a11y_back_second)
             val forwardLabel = stringResource(R.string.editor_a11y_forward_second)
@@ -230,27 +238,55 @@ private fun ZoomBar(viewport: TimelineViewportState) {
     }
 }
 
+/**
+ * A track's name and sound switch. Tapping it mutes or unmutes the track;
+ * the mute applies in preview and export. On the main track it mutes the
+ * videos' own sound.
+ */
 @Composable
-private fun TrackLabel(kind: TrackKind, height: Dp, width: Dp) {
+private fun TrackLabel(track: TimelineTrackUi, height: Dp, width: Dp, onToggleMute: (TimelineTrackUi) -> Unit) {
+    val name = stringResource(
+        when {
+            track.kind == TrackKind.VIDEO -> R.string.editor_track_video
+            track.role == AudioRole.VOICEOVER -> R.string.editor_track_voiceover
+            track.role == AudioRole.MUSIC -> R.string.editor_track_music
+            else -> R.string.editor_track_audio
+        },
+    )
+    val muted = track.audio.muted
+    val stateText = stringResource(if (muted) R.string.editor_track_muted else R.string.editor_track_sound_on)
+    val toggleLabel = stringResource(if (muted) R.string.editor_unmute_track else R.string.editor_mute_track)
+    val tint = if (muted) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
         modifier = Modifier
             .size(width, height)
             .padding(vertical = 2.dp)
-            .background(MaterialTheme.colorScheme.surfaceContainer, RoundedCornerShape(topStart = 6.dp, bottomStart = 6.dp)),
+            .background(MaterialTheme.colorScheme.surfaceContainer, RoundedCornerShape(topStart = 6.dp, bottomStart = 6.dp))
+            .clickable(onClickLabel = toggleLabel) { onToggleMute(track) }
+            .semantics(mergeDescendants = true) {
+                role = Role.Switch
+                stateDescription = stateText
+            },
     ) {
         Icon(
-            if (kind == TrackKind.VIDEO) VeyroIcons.Movie else VeyroIcons.MusicNote,
+            when {
+                muted -> VeyroIcons.VolumeOff
+                track.kind == TrackKind.VIDEO -> VeyroIcons.Movie
+                track.role == AudioRole.VOICEOVER -> VeyroIcons.Mic
+                else -> VeyroIcons.MusicNote
+            },
             contentDescription = null,
-            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            tint = tint,
             modifier = Modifier.size(18.dp),
         )
         Text(
-            stringResource(if (kind == TrackKind.VIDEO) R.string.editor_track_video else R.string.editor_track_audio),
+            name,
             style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            color = tint,
             maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
         )
     }
 }
@@ -311,6 +347,7 @@ private fun TrackLane(
                     TimelineClip(
                         clip = clip,
                         trackKind = track.kind,
+                        trackAudio = track.audio,
                         selected = clip.id == selectedClipId,
                         viewport = viewport,
                         thumbnails = thumbnails,
@@ -339,6 +376,7 @@ private fun TrackLane(
 private fun TimelineClip(
     clip: TimelineClipUi,
     trackKind: TrackKind,
+    trackAudio: TrackAudio,
     selected: Boolean,
     viewport: TimelineViewportState,
     thumbnails: StripThumbnails,
@@ -349,6 +387,10 @@ private fun TimelineClip(
     val shape = RoundedCornerShape(6.dp)
     val container = if (trackKind == TrackKind.VIDEO) MaterialTheme.colorScheme.surfaceContainerHighest else MaterialTheme.colorScheme.secondaryContainer
     val placeholder = MaterialTheme.colorScheme.surfaceContainerHigh
+    val silent = clip.audio.isSilent || trackAudio.isSilent
+    val waveColor = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = if (silent) 0.25f else 0.7f)
+    val gainLineColor = MaterialTheme.colorScheme.primary
+    val videoWaveColor = Color.White.copy(alpha = if (silent) 0.25f else 0.8f)
     val kindLabel = stringResource(
         when (clip.mediaKind) {
             MediaKind.VIDEO -> R.string.editor_clip_video
@@ -372,6 +414,17 @@ private fun TimelineClip(
             .background(container)
             .drawBehind {
                 if (clip.mediaKind != MediaKind.AUDIO) drawFilmstrip(clip, viewport, thumbnails, placeholder)
+                when {
+                    // Audio clips: the waveform fills the clip, under the title.
+                    clip.mediaKind == MediaKind.AUDIO ->
+                        drawWaveform(clip, trackAudio, viewport, waveColor, gainLineColor, bandTop = size.height * 0.3f, bandHeight = size.height * 0.65f)
+                    // Videos with sound: a waveform band along the bottom of the filmstrip, in sync with the frames above it.
+                    clip.hasAudio && clip.mediaKind == MediaKind.VIDEO -> {
+                        val band = size.height * 0.32f
+                        drawRect(Color.Black.copy(alpha = 0.45f), topLeft = Offset(0f, size.height - band), size = androidx.compose.ui.geometry.Size(size.width, band))
+                        drawWaveform(clip, trackAudio, viewport, videoWaveColor, gainLineColor, bandTop = size.height - band, bandHeight = band)
+                    }
+                }
             }
             .then(if (selected) Modifier.border(2.dp, MaterialTheme.colorScheme.primary, shape) else Modifier)
             .semantics(mergeDescendants = true) {
@@ -407,6 +460,9 @@ private fun TimelineClip(
         ) {
             if (trackKind == TrackKind.AUDIO) {
                 Icon(VeyroIcons.MusicNote, contentDescription = null, modifier = Modifier.size(14.dp), tint = MaterialTheme.colorScheme.onSecondaryContainer)
+            }
+            if (clip.hasAudio && clip.audio.muted) {
+                Icon(VeyroIcons.VolumeOff, contentDescription = stringResource(R.string.editor_clip_muted), modifier = Modifier.size(14.dp), tint = MaterialTheme.colorScheme.error)
             }
             Text(
                 clip.title,

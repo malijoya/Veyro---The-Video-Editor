@@ -60,7 +60,7 @@ class ProjectDocumentMigrationTest {
 
         repo.rename(ProjectId("p1"), "Renamed")
         val text = File(tmp.root, "p1/project.json").readText()
-        assertTrue(text.contains("\"schemaVersion\":4"))
+        assertTrue(text.contains("\"schemaVersion\":$CURRENT_SCHEMA_VERSION"))
         assertEquals("Renamed", (ProjectDocumentCodec.decode(text) as DecodeResult.Ok).project.name)
     }
 
@@ -93,6 +93,52 @@ class ProjectDocumentMigrationTest {
         val json = ProjectDocumentCodec.encode(project)
         assertTrue(json.contains("\"kind\":\"audio\""))
         assertEquals(DecodeResult.Ok(project), ProjectDocumentCodec.decode(json))
+    }
+
+    @Test
+    fun `audio settings, track roles and gain keyframes round-trip in v5`() {
+        val song = MediaRef(
+            id = MediaId("s"), uri = "content://s", kind = MediaKind.AUDIO, displayName = "song.mp3", mimeType = "audio/mpeg",
+            durationUs = 60_000_000, widthPx = 0, heightPx = 0, rotationDegrees = 0, sizeBytes = 1,
+            audio = AudioTrackInfo("audio/mpeg", 44_100, 2, null),
+        )
+        val clipAudio = com.editor.veyro.core.model.audio.ClipAudio(
+            volume = 0.35f, muted = true, fadeInUs = 1_500_000, fadeOutUs = 2_250_000,
+            keyframes = listOf(
+                com.editor.veyro.core.model.audio.GainKeyframe(1_000_000, 0.5f, com.editor.veyro.core.model.audio.GainInterpolation.HOLD),
+                com.editor.veyro.core.model.audio.GainKeyframe(9_000_000, 1f),
+            ),
+        )
+        val timeline = com.editor.veyro.core.model.timeline.Timeline(
+            listOf(
+                com.editor.veyro.core.model.timeline.Track(com.editor.veyro.core.model.timeline.TrackId("v"), com.editor.veyro.core.model.timeline.TrackKind.VIDEO, emptyList(), audio = com.editor.veyro.core.model.audio.TrackAudio(volume = 0.6f)),
+                com.editor.veyro.core.model.timeline.Track(
+                    com.editor.veyro.core.model.timeline.TrackId("m"), com.editor.veyro.core.model.timeline.TrackKind.AUDIO,
+                    listOf(com.editor.veyro.core.model.timeline.Clip(com.editor.veyro.core.model.timeline.ClipId("c"), song.id, 0, 0, 10_000_000, audio = clipAudio)),
+                    audio = com.editor.veyro.core.model.audio.TrackAudio(muted = true),
+                    role = com.editor.veyro.core.model.audio.AudioRole.MUSIC,
+                ),
+                com.editor.veyro.core.model.timeline.Track(com.editor.veyro.core.model.timeline.TrackId("vo"), com.editor.veyro.core.model.timeline.TrackKind.AUDIO, emptyList(), role = com.editor.veyro.core.model.audio.AudioRole.VOICEOVER),
+            ),
+        )
+        val project = Project(ProjectId("p"), "Mix", 1, 2, listOf(song), timeline)
+        val json = ProjectDocumentCodec.encode(project)
+        assertTrue(json.contains("\"schemaVersion\":5"))
+        assertEquals(DecodeResult.Ok(project), ProjectDocumentCodec.decode(json))
+        // Default sound isn't written out.
+        val plain = project.copy(timeline = timeline.copy(tracks = timeline.tracks.map { t -> t.copy(audio = com.editor.veyro.core.model.audio.TrackAudio.DEFAULT, clips = t.clips.map { it.copy(audio = com.editor.veyro.core.model.audio.ClipAudio.DEFAULT) }) }))
+        assertTrue(!ProjectDocumentCodec.encode(plain).contains("\"fadeInUs\""))
+    }
+
+    @Test
+    fun `hand-edited audio values are brought into range instead of failing the project`() {
+        val project = Project(ProjectId("p"), "Mix", 1, 2, emptyList())
+        val json = ProjectDocumentCodec.encode(project).replace(
+            "\"timeline\":null",
+            """"timeline":{"tracks":[{"id":"m","kind":"audio","clips":[],"audio":{"volume":7.5,"muted":false}}]}""",
+        )
+        val decoded = (ProjectDocumentCodec.decode(json) as DecodeResult.Ok).project
+        assertEquals(1f, decoded.timeline!!.tracks.single().audio.volume)
     }
 
     @Test

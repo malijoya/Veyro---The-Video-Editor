@@ -29,6 +29,9 @@ public object TimelineEditor {
         is EditCommand.Move -> move(timeline, command)
         is EditCommand.Delete -> delete(timeline, command)
         is EditCommand.CloseGaps -> closeGaps(timeline, command)
+        is EditCommand.SetClipAudio -> setClipAudio(timeline, command, context)
+        is EditCommand.SetTrackAudio -> setTrackAudio(timeline, command)
+        is EditCommand.MoveToTrack -> moveToTrack(timeline, command)
     }
 
     // ---- Trim ----
@@ -89,7 +92,8 @@ public object TimelineEditor {
         }
 
         val leftDuration = at - clip.startUs
-        val left = clip.copy(durationUs = leftDuration)
+        // The fade-in stays at the start and the fade-out at the end. Keyframes are in source time, so each part keeps its own.
+        val left = clip.copy(durationUs = leftDuration, audio = clip.audio.copy(fadeOutUs = 0))
         val right = Clip(
             id = context.newClipId(),
             mediaId = clip.mediaId,
@@ -98,6 +102,7 @@ public object TimelineEditor {
             sourceInUs = if (bounds.isStill) 0 else clip.sourceInUs + leftDuration,
             durationUs = clip.endUs - at,
             effects = clip.effects, // Both parts keep the clip's effects.
+            audio = clip.audio.copy(fadeInUs = 0),
         )
         val clips = track.clips.toMutableList().apply {
             set(index, left)
@@ -171,6 +176,43 @@ public object TimelineEditor {
         val packed = pack(track.clips)
         if (packed == track.clips) return EditResult.Rejected(EditRejection.NO_CHANGE)
         return EditResult.Applied(timeline.withTrack(track.copy(clips = packed)), affectedClipId = null)
+    }
+
+    // ---- Audio ----
+
+    private fun setClipAudio(timeline: Timeline, command: EditCommand.SetClipAudio, context: EditContext): EditResult {
+        val located = locate(timeline, command.clipId) ?: return EditResult.Rejected(EditRejection.CLIP_NOT_FOUND)
+        val (track, index, clip) = located
+        val bounds = context.media[clip.mediaId] ?: return EditResult.Rejected(EditRejection.MEDIA_NOT_FOUND)
+        if (!bounds.hasAudio || bounds.isStill) return EditResult.Rejected(EditRejection.NO_AUDIO)
+        val audio = command.audio.copy(
+            fadeInUs = command.audio.fadeInUs.coerceAtMost(clip.durationUs),
+            fadeOutUs = command.audio.fadeOutUs.coerceAtMost(clip.durationUs),
+        )
+        if (audio == clip.audio) return EditResult.Rejected(EditRejection.NO_CHANGE)
+        val clips = track.clips.toMutableList().apply { set(index, clip.copy(audio = audio)) }
+        return EditResult.Applied(timeline.withTrack(track.copy(clips = clips)), clip.id)
+    }
+
+    private fun setTrackAudio(timeline: Timeline, command: EditCommand.SetTrackAudio): EditResult {
+        val track = timeline.track(command.trackId) ?: return EditResult.Rejected(EditRejection.TRACK_NOT_FOUND)
+        if (track.audio == command.audio) return EditResult.Rejected(EditRejection.NO_CHANGE)
+        return EditResult.Applied(timeline.withTrack(track.copy(audio = command.audio)), affectedClipId = null)
+    }
+
+    private fun moveToTrack(timeline: Timeline, command: EditCommand.MoveToTrack): EditResult {
+        val located = locate(timeline, command.clipId) ?: return EditResult.Rejected(EditRejection.CLIP_NOT_FOUND)
+        val (from, index, clip) = located
+        val target = timeline.track(command.trackId) ?: return EditResult.Rejected(EditRejection.TRACK_NOT_FOUND)
+        if (target.id == from.id) return move(timeline, EditCommand.Move(clip.id, command.toStartUs))
+        if (target.kind != from.kind || timeline.isMagnetic(target.id) || timeline.isMagnetic(from.id)) {
+            return EditResult.Rejected(EditRejection.INCOMPATIBLE_TRACK)
+        }
+        val start = nearestFreeStart(target.clips, command.toStartUs.coerceAtLeast(0), clip.durationUs)
+        val moved = clip.copy(startUs = start)
+        val source = from.copy(clips = from.clips.toMutableList().apply { removeAt(index) })
+        val destination = target.copy(clips = (target.clips + moved).sortedBy { it.startUs })
+        return EditResult.Applied(timeline.withTrack(source).withTrack(destination), clip.id)
     }
 
     // ---- Helpers ----

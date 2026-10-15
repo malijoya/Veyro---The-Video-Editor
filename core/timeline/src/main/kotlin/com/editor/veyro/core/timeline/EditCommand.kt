@@ -1,5 +1,7 @@
 package com.editor.veyro.core.timeline
 
+import com.editor.veyro.core.model.audio.ClipAudio
+import com.editor.veyro.core.model.audio.TrackAudio
 import com.editor.veyro.core.model.project.MediaId
 import com.editor.veyro.core.model.project.MediaKind
 import com.editor.veyro.core.model.timeline.ClipId
@@ -45,6 +47,24 @@ public sealed interface EditCommand {
 
     /** Packs a track's clips back to back from 0, removing every gap. */
     public data class CloseGaps(val trackId: TrackId) : EditCommand
+
+    /**
+     * Sets a clip's volume, mute and fades. Fades longer than the clip are
+     * shortened to it. Rejected for clips without sound (photos, silent
+     * videos).
+     */
+    public data class SetClipAudio(val clipId: ClipId, val audio: ClipAudio) : EditCommand
+
+    /** Sets a whole track's volume and mute. */
+    public data class SetTrackAudio(val trackId: TrackId, val audio: TrackAudio) : EditCommand
+
+    /**
+     * Moves a clip to another track of the same kind (for example from Music
+     * to Voiceover), at the free position nearest [toStartUs]. The old track
+     * keeps the gap. Only between tracks that keep gaps; the magnetic main
+     * track reorders with [Move] instead.
+     */
+    public data class MoveToTrack(val clipId: ClipId, val trackId: TrackId, val toStartUs: Long) : EditCommand
 }
 
 /** Why the engine refused an edit. The UI turns these into messages. */
@@ -63,6 +83,12 @@ public enum class EditRejection {
 
     /** The edit is valid but changes nothing (for example closing gaps on a track without gaps). */
     NO_CHANGE,
+
+    /** An audio edit on a clip whose media has no sound. */
+    NO_AUDIO,
+
+    /** The clip can't go on that track (different kind, or the magnetic main track). */
+    INCOMPATIBLE_TRACK,
 }
 
 public sealed interface EditResult {
@@ -76,8 +102,14 @@ public sealed interface EditResult {
     public data class Rejected(val reason: EditRejection) : EditResult
 }
 
-/** What the engine needs to know about each media item to keep edits within the source. */
-public data class MediaBounds(val kind: MediaKind, val durationUs: Long) {
+/**
+ * What the engine needs to know about each media item to keep edits within
+ * the source.
+ *
+ * @property hasAudio whether the file has an audio stream. Audio edits on
+ *   clips without one are rejected.
+ */
+public data class MediaBounds(val kind: MediaKind, val durationUs: Long, val hasAudio: Boolean = kind != MediaKind.IMAGE) {
     /** Photos have no source time, so they can be any length. */
     val isStill: Boolean get() = kind == MediaKind.IMAGE
 }

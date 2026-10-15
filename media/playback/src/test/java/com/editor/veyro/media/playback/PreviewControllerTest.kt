@@ -65,6 +65,20 @@ class PreviewControllerTest {
             if (status == EngineStatus.ENDED) status = EngineStatus.READY
         }
 
+        var loadedTimeline: com.editor.veyro.core.timeline.export.ExportPlan? = null
+        var timelineStartMs = -1L
+
+        override fun loadTimeline(plan: com.editor.veyro.core.timeline.export.ExportPlan, startPositionMs: Long) {
+            loadedTimeline = plan
+            timelineStartMs = startPositionMs
+            loadCount++
+            currentItemIndex = 0
+            currentPositionMs = startPositionMs
+            status = EngineStatus.BUFFERING
+            errorCode = null
+            isPlaying = false
+        }
+
         override fun release() {
             released = true
         }
@@ -279,5 +293,54 @@ class PreviewControllerTest {
         controller.attach()
         assertEquals(1, engines.size)
         runCurrent()
+    }
+
+    // ---------------- Timelines ----------------
+
+    private fun timelinePlan(durationUs: Long, volume: Float = 1f): PreviewPlan {
+        val envelope = com.editor.veyro.core.model.audio.GainEnvelope(durationUs, 0, com.editor.veyro.core.model.audio.ClipAudio(volume = volume))
+        val render = com.editor.veyro.core.timeline.export.ExportPlan(
+            settings = com.editor.veyro.core.timeline.export.ExportSettings(640, 360, com.editor.veyro.core.model.time.FrameRate.FPS_30),
+            video = emptyList(),
+            audioTracks = listOf(
+                listOf(com.editor.veyro.core.timeline.export.AudioSegment.Clip("content://song", 0, durationUs, durationUs, com.editor.veyro.core.timeline.export.SegmentGain(envelope, 0))),
+            ),
+        )
+        return PreviewPlan.forTimeline(render)
+    }
+
+    @Test
+    fun `timelines load as one composition and keep their position across edits`() = runTest {
+        val controller = controller()
+        controller.setPlan(timelinePlan(8_000_000))
+        controller.attach()
+        assertEquals(0L, engine.timelineStartMs)
+        assertEquals(null, engine.loadedItems) // Not a playlist.
+        engine.ready(durationMs = 8_000)
+        controller.seekTo(3_000_000)
+        assertEquals(listOf(0 to 3_000L), engine.seeks)
+
+        // An edit (here a volume change) reloads the composition at the same time, paused.
+        controller.setPlan(timelinePlan(8_000_000, volume = 0.5f), keepPosition = true)
+        assertEquals(3_000L, engine.timelineStartMs)
+        assertEquals(0.5f, (engine.loadedTimeline!!.audioTracks.single().single() as com.editor.veyro.core.timeline.export.AudioSegment.Clip).gain.envelope.baseGain, 0f)
+        assertEquals(3_000_000L, controller.state.value.positionUs)
+        assertFalse(engine.playWhenReady)
+
+        // A shorter timeline clamps the kept position; an unrelated plan starts over.
+        controller.setPlan(timelinePlan(2_000_000), keepPosition = true)
+        assertEquals(2_000L, engine.timelineStartMs)
+        controller.setPlan(timelinePlan(5_000_000, volume = 0.2f))
+        assertEquals(0L, engine.timelineStartMs)
+    }
+
+    @Test
+    fun `an unchanged timeline plan doesn't reload`() = runTest {
+        val controller = controller()
+        controller.setPlan(timelinePlan(4_000_000))
+        controller.attach()
+        val loads = engine.loadCount
+        controller.setPlan(timelinePlan(4_000_000), keepPosition = true)
+        assertEquals(loads, engine.loadCount)
     }
 }

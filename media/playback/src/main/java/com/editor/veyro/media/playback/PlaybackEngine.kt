@@ -1,6 +1,7 @@
 package com.editor.veyro.media.playback
 
 import androidx.media3.common.Player
+import com.editor.veyro.core.timeline.export.ExportPlan
 
 /** One item for the engine: a source URI, optionally clipped to a range. */
 public data class EngineItem(
@@ -46,6 +47,15 @@ public interface PlaybackEngine {
 
     /** Replaces the items, positions at [startIndex]/[startPositionMs] and prepares. */
     public fun load(items: List<EngineItem>, startIndex: Int, startPositionMs: Long)
+
+    /**
+     * Replaces what plays with a whole timeline (every track mixed), at
+     * [startPositionMs], and prepares. It then reports a single item. Engines
+     * that can only play playlists throw.
+     */
+    public fun loadTimeline(plan: ExportPlan, startPositionMs: Long) {
+        throw UnsupportedOperationException("${javaClass.simpleName} can't play timelines")
+    }
     public fun play()
     public fun pause()
     public fun seekTo(itemIndex: Int, positionMs: Long)
