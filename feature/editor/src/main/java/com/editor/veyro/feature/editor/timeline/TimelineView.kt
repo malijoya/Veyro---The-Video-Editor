@@ -426,6 +426,7 @@ private fun TimelineClip(
     val gainLineColor = MaterialTheme.colorScheme.primary
     val videoWaveColor = Color.White.copy(alpha = if (silent) 0.25f else 0.8f)
     val keyframeAtPlayhead = MaterialTheme.colorScheme.primary
+    val gainKeyframeColor = MaterialTheme.colorScheme.tertiary
     val kindLabel = stringResource(
         when {
             isText -> R.string.editor_clip_text
@@ -467,12 +468,14 @@ private fun TimelineClip(
             }
             // Keyframe markers, over everything else in the clip.
             .then(
-                if (clip.keyframeTimesUs.isEmpty()) {
+                if (clip.keyframeTimesUs.isEmpty() && clip.gainKeyframeTimesUs.isEmpty()) {
                     Modifier
                 } else {
                     Modifier.drawWithContent {
                         drawContent()
-                        drawKeyframes(clip, viewport, keyframeAtPlayhead)
+                        // Placement keyframes along the bottom edge; volume keyframes above them, smaller, in another color.
+                        drawKeyframes(clip, clip.keyframeTimesUs, viewport, Color.White, keyframeAtPlayhead, size.height - 8.dp.toPx(), 5.dp.toPx())
+                        drawKeyframes(clip, clip.gainKeyframeTimesUs, viewport, gainKeyframeColor, keyframeAtPlayhead, size.height - 20.dp.toPx(), 4.dp.toPx())
                     }
                 },
             )
@@ -605,16 +608,23 @@ private fun SnapGuide(viewport: TimelineViewportState, timeUs: Long, modifier: M
 }
 
 /**
- * A diamond at each of the clip's keyframes, along its bottom edge. The one
- * under the playhead is drawn in [atPlayhead]. Positions follow the
- * viewport in the draw phase, like the filmstrip.
+ * A diamond of half-size [half] at each clip-local time in [timesUs], centred
+ * at height [y]. The one under the playhead is drawn in [atPlayhead].
+ * Positions follow the viewport in the draw phase, like the filmstrip.
  */
-private fun DrawScope.drawKeyframes(clip: TimelineClipUi, viewport: TimelineViewportState, atPlayhead: Color) {
+private fun DrawScope.drawKeyframes(
+    clip: TimelineClipUi,
+    timesUs: List<Long>,
+    viewport: TimelineViewportState,
+    color: Color,
+    atPlayhead: Color,
+    y: Float,
+    half: Float,
+) {
+    if (timesUs.isEmpty()) return
     val span = viewport.visibleSpan(clip.startUs, clip.endUs) ?: return
-    val half = 5.dp.toPx()
-    val y = size.height - half - 3.dp.toPx()
     val playheadX = viewport.xForTime(viewport.playheadUs) - span.start
-    clip.keyframeTimesUs.forEach { localUs ->
+    timesUs.forEach { localUs ->
         val x = viewport.xForTime(clip.startUs + localUs) - span.start
         if (x < -half || x > size.width + half) return@forEach
         val diamond = Path().apply {
@@ -625,7 +635,7 @@ private fun DrawScope.drawKeyframes(clip: TimelineClipUi, viewport: TimelineView
             close()
         }
         val selected = kotlin.math.abs(x - playheadX) < 1.5.dp.toPx()
-        drawPath(diamond, if (selected) atPlayhead else Color.White)
+        drawPath(diamond, if (selected) atPlayhead else color)
         drawPath(diamond, Color.Black.copy(alpha = 0.6f), style = androidx.compose.ui.graphics.drawscope.Stroke(width = 1.dp.toPx()))
     }
 }

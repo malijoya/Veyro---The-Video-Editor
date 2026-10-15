@@ -3,6 +3,7 @@ package com.editor.veyro.core.model.animation
 import com.editor.veyro.core.model.overlay.OverlayTransform
 import com.editor.veyro.core.model.timeline.ClipEffect
 import com.editor.veyro.core.model.transform.ClipTransform
+import com.editor.veyro.core.model.transform.CropRect
 
 /** A property a clip can animate. */
 public sealed interface AnimatedProperty {
@@ -11,8 +12,8 @@ public sealed interface AnimatedProperty {
 }
 
 /**
- * The placement channels shared by video clips ([ClipTransform]) and
- * overlays ([OverlayTransform]):
+ * The placement channels of video clips ([ClipTransform]) and overlays
+ * ([OverlayTransform]):
  *
  * | Channel | ClipTransform | OverlayTransform | Unit |
  * |---|---|---|---|
@@ -21,9 +22,15 @@ public sealed interface AnimatedProperty {
  * | [SCALE] | scale | scale | multiplier |
  * | [ROTATION] | rotationDegrees | rotationDegrees | clockwise degrees |
  * | [OPACITY] | opacity | opacity | 0..1 |
+ * | [CROP_LEFT] … [CROP_BOTTOM] | crop edges | — | fraction of the upright source |
  *
  * Rotation keyframes are not wrapped into (-180, 180]: 0 → 720 turns twice.
  * The evaluated angle is wrapped when it is applied to a transform.
+ *
+ * Crop edges interpolate one by one, so a crop locked to a shape keeps that
+ * shape on its keyframes; between two keyframes of different sizes the shape
+ * can drift slightly. The evaluated edges are put in order and kept at least
+ * [CropRect.MIN_SIZE] apart ([CropRect.coerced]). Overlays have no crop.
  */
 public enum class TransformChannel(override val key: String) : AnimatedProperty {
     POSITION_X("positionX"),
@@ -31,9 +38,19 @@ public enum class TransformChannel(override val key: String) : AnimatedProperty 
     SCALE("scale"),
     ROTATION("rotation"),
     OPACITY("opacity"),
+    CROP_LEFT("cropLeft"),
+    CROP_TOP("cropTop"),
+    CROP_RIGHT("cropRight"),
+    CROP_BOTTOM("cropBottom"),
     ;
 
+    /** Whether this is one of the crop edges, which only pictures have. */
+    public val isCrop: Boolean get() = this == CROP_LEFT || this == CROP_TOP || this == CROP_RIGHT || this == CROP_BOTTOM
+
     public companion object {
+        /** The channels overlays have. */
+        public val OVERLAY_CHANNELS: List<TransformChannel> = entries.filterNot { it.isCrop }
+
         public fun fromKey(key: String): TransformChannel? = entries.firstOrNull { it.key == key }
     }
 }
@@ -131,21 +148,32 @@ public data class ClipAnimation(val tracks: Map<AnimatedProperty, KeyframeTrack>
     /**
      * [base] with its animated channels set to their values at clip-local
      * [localUs]. Values are brought into range (rotation wrapped, scale and
-     * opacity clamped); everything not animated (anchor, crop, fit) is
-     * [base]'s.
+     * opacity clamped, crop edges ordered); everything not animated (anchor,
+     * crop shape lock, fit) is [base]'s.
      */
     public fun transformAt(base: ClipTransform, localUs: Long): ClipTransform {
         if (!animatesTransform) return base
+        val animatesCrop = tracks.keys.any { it is TransformChannel && it.isCrop }
         return base.with(
             positionX = channel(TransformChannel.POSITION_X, localUs, base.positionX),
             positionY = channel(TransformChannel.POSITION_Y, localUs, base.positionY),
             scale = channel(TransformChannel.SCALE, localUs, base.scale),
             rotationDegrees = channel(TransformChannel.ROTATION, localUs, base.rotationDegrees),
             opacity = channel(TransformChannel.OPACITY, localUs, base.opacity),
+            crop = if (!animatesCrop) {
+                base.crop
+            } else {
+                CropRect.coerced(
+                    channel(TransformChannel.CROP_LEFT, localUs, base.crop.left),
+                    channel(TransformChannel.CROP_TOP, localUs, base.crop.top),
+                    channel(TransformChannel.CROP_RIGHT, localUs, base.crop.right),
+                    channel(TransformChannel.CROP_BOTTOM, localUs, base.crop.bottom),
+                )
+            },
         )
     }
 
-    /** [base] (an overlay's placement) with its animated channels at clip-local [localUs]. See [transformAt]. */
+    /** [base] (an overlay's placement) with its animated channels at clip-local [localUs]. See [transformAt]. Crop channels don't apply. */
     public fun overlayTransformAt(base: OverlayTransform, localUs: Long): OverlayTransform {
         if (!animatesTransform) return base
         return OverlayTransform.coerced(

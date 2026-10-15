@@ -198,7 +198,10 @@
         <item quantity="one">%d keyframe</item>
         <item quantity="other">%d keyframes</item>
     </plurals>
-    <string name="keyframe_hint_none">Add a keyframe, move the playhead, then move, resize, turn or fade the clip. Veyro animates between keyframes.</string>
+    <string name="keyframe_hint_none">Add a keyframe, move the playhead, then move, resize, turn, fade or crop the clip. Veyro animates between keyframes.</string>
+    <string name="gain_keyframe_hint_none">Add volume keyframes and set a level at each. Between them the volume follows a line, or holds.</string>
+    <string name="gain_keyframe_hint_between">Add a keyframe here to set the volume at this moment.</string>
+    <string name="gain_keyframe_level">Level</string>
     <string name="keyframe_hint_between">Changes here add a keyframe at the playhead.</string>
     <string name="keyframe_hint_outside">Move the playhead over the clip to add or edit keyframes.</string>
     <string name="keyframe_hint_last">This is the last keyframe. Its curve applies once another keyframe follows it.</string>

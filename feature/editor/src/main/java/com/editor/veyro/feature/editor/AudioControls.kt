@@ -26,6 +26,10 @@ import androidx.compose.ui.unit.dp
 import com.editor.veyro.core.designsystem.theme.Spacing
 import com.editor.veyro.core.model.audio.AudioRole
 import com.editor.veyro.core.model.audio.ClipAudio
+import com.editor.veyro.core.model.audio.GainInterpolation
+import com.editor.veyro.feature.editor.keyframe.KeyframeActions
+import com.editor.veyro.feature.editor.keyframe.KeyframeBar
+import com.editor.veyro.feature.editor.keyframe.KeyframeTexts
 import com.editor.veyro.core.model.audio.TrackAudio
 import com.editor.veyro.core.model.timeline.ClipId
 import com.editor.veyro.core.model.timeline.TrackId
@@ -41,6 +45,7 @@ private const val MAX_FADE_US = 10_000_000L
  * real edit (one undoable step when the slider is released), and that edit
  * changes both the preview mix and the export:
  * - clip volume (0–100%), mute, fade-in and fade-out
+ * - volume keyframes ([keyframes], a [GainKeyframeSection])
  * - the track's volume and mute
  * - moving an audio clip between the Music and Voiceover tracks
  *
@@ -56,6 +61,7 @@ internal fun AudioControls(
     onSetClipAudio: (ClipId, ClipAudio) -> Unit,
     onSetTrackAudio: (TrackId, TrackAudio) -> Unit,
     onMoveToTrack: (ClipId, TrackId) -> Unit,
+    keyframes: @Composable () -> Unit = {},
 ) {
     if (!clip.hasAudio) {
         Text(
@@ -99,6 +105,7 @@ internal fun AudioControls(
             key = clip.id.value + "/fadeOut/" + clip.durationUs,
             onCommit = { onSetClipAudio(clip.id, audio.copy(fadeOutUs = it)) },
         )
+        keyframes()
 
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = Spacing.xs).semantics(mergeDescendants = true) {}) {
             Text(
@@ -131,6 +138,61 @@ internal fun AudioControls(
             }
         }
     }
+}
+
+/** What the volume keyframe bar can do, at the playhead. */
+internal class GainKeyframeActions(
+    val onAdd: () -> Unit,
+    val onRemove: () -> Unit,
+    val onJumpTo: (Long) -> Unit,
+    val onLevel: (Float) -> Unit,
+    val onCurve: (GainInterpolation) -> Unit,
+    val onNudge: (Int) -> Unit,
+    val onClear: () -> Unit,
+)
+
+/**
+ * Volume keyframes of the selected clip: the keyframe bar, plus a level
+ * slider for the keyframe at the playhead. A keyframe's level is a share of
+ * the clip's volume, and between keyframes the level follows a straight line
+ * or holds. In its own recomposition scope, since it follows the playhead.
+ */
+@Composable
+internal fun GainKeyframeSection(
+    clip: TimelineClipUi,
+    playheadUs: () -> Long,
+    frameDurationUs: Long,
+    enabled: Boolean,
+    actions: GainKeyframeActions,
+) {
+    // Source time to timeline time.
+    fun timelineOf(sourceUs: Long) = clip.startUs + sourceUs - clip.sourceInUs
+    KeyframeBar(
+        momentsUs = clip.audio.keyframes.map { timelineOf(it.sourceTimeUs) },
+        clipStartUs = clip.startUs,
+        clipEndUs = clip.endUs,
+        playheadUs = playheadUs(),
+        frameDurationUs = frameDurationUs,
+        enabled = enabled,
+        curves = GainInterpolation.entries,
+        curveLabel = { if (it == GainInterpolation.HOLD) R.string.easing_hold else R.string.easing_linear },
+        curveAt = { timelineUs -> clip.audio.keyframes.firstOrNull { timelineOf(it.sourceTimeUs) == timelineUs }?.interpolation },
+        texts = KeyframeTexts(R.string.gain_keyframe_hint_none, R.string.gain_keyframe_hint_between),
+        actions = KeyframeActions(actions.onAdd, actions.onRemove, actions.onJumpTo, actions.onCurve, actions.onNudge, actions.onClear),
+        modifier = Modifier.padding(top = Spacing.xs),
+        selectedContent = { timelineUs ->
+            val keyframe = clip.audio.keyframes.firstOrNull { timelineOf(it.sourceTimeUs) == timelineUs }
+            if (keyframe != null) {
+                GainSlider(
+                    label = stringResource(R.string.gain_keyframe_level),
+                    value = keyframe.gain,
+                    enabled = enabled,
+                    key = clip.id.value + "/gainKeyframe/" + keyframe.sourceTimeUs,
+                    onCommit = actions.onLevel,
+                )
+            }
+        },
+    )
 }
 
 @Composable

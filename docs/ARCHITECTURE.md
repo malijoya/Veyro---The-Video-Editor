@@ -441,8 +441,7 @@ Checked against the Media3 1.11.1 sources before implementation:
 
 - **Model (`core:model/audio`):**
   - `ClipAudio` on every clip: volume 0..1, mute, fade-in, fade-out, and
-    gain keyframes. Keyframes are stored, carried through edits and
-    rendered, but not editable in the UI yet.
+    gain keyframes (edited in the Sound panel, see "Keyframes").
   - `TrackAudio` on every track: volume 0..1 and mute.
   - Audio tracks have an `AudioRole` (MUSIC, VOICEOVER).
     `DefaultArrangement.withStandardTracks` gives older timelines both
@@ -663,9 +662,10 @@ editor: PictureUi.at(t) / OverlayUi.at(t) (canvas, panels) ─ Keyframing (edit 
 
 - **Model (`core:model/animation`).** A `ClipAnimation` maps each animated
   property to a `KeyframeTrack`: keyframes sorted by time, at most one per
-  time, never empty. Properties are the placement channels shared by
-  pictures and overlays (`TransformChannel`: position x and y, scale,
-  rotation, opacity) and effect parameters (`EffectParam(effectId,
+  time, never empty. Properties are the placement channels
+  (`TransformChannel`: position x and y, scale, rotation and opacity for
+  pictures and overlays; the four crop edges for pictures only) and effect
+  parameters (`EffectParam(effectId,
   param)`). A property without keyframes keeps the clip's static value, so
   an empty animation changes nothing.
 - **Time semantics.** Keyframe times are **clip-local**: µs since the
@@ -722,6 +722,10 @@ editor: PictureUi.at(t) / OverlayUi.at(t) (canvas, panels) ─ Keyframing (edit 
     shown angle (170° → -170° is +20°, stored as 190°). Crop, anchor and fit
     aren't animatable and change the static transform. A clip without
     keyframes is edited as before.
+  - Crop edges interpolate one by one and are ordered and kept a minimum
+    size apart when evaluated. A crop locked to a shape keeps it on its
+    keyframes; between keyframes of different sizes the shape can drift
+    slightly. The shape lock, anchor and fit stay static.
   - Each action is one command (`SetClipAnimation`, or
     `SetClipTransform` / `SetOverlay` with an animation), so undo and redo
     are exact. Reset clears placement keyframes. A duplicated overlay keeps
@@ -745,11 +749,19 @@ editor: PictureUi.at(t) / OverlayUi.at(t) (canvas, panels) ─ Keyframing (edit 
   the playhead moves onto it), add/delete at the playhead, the curve to
   the next keyframe, ±1 frame, and Clear all. Timeline clips show a
   diamond at each keyframe, highlighted under the playhead.
+- **Volume keyframes.** Audio keeps its own keyframes (`GainKeyframe`, in
+  source time, linear or hold, a level that multiplies the clip's volume;
+  rendered by `GainEnvelope` since M6.5). The Sound panel edits them with
+  the same keyframe bar: add at the playhead (holding the current level), a
+  level slider for the keyframe at the playhead, linear or hold, ±1 frame,
+  delete, clear (`GainKeyframes`, one `SetClipAudio` edit each). The
+  timeline marks them with small diamonds above the placement ones.
 - **Storage.** Schema v8: an optional `animation` list per clip, with
   `{property, effectId?, param?, keyframes: [{timeUs, value, easing}]}`.
   Decoding is lenient: unknown properties, non-finite values, repeated
   times and keyframes for missing effects are dropped, an unknown easing
-  reads as linear, and placement keyframes on sound clips are ignored.
+  reads as linear, placement keyframes on sound clips are ignored, and crop
+  keyframes count only on video tracks.
 
 ## Export (M6)
 
@@ -826,13 +838,13 @@ Checked against the Media3 1.11.1 sources and the Transformer guides
 | More than 15 SDR overlays at the same moment | Fine: all visible overlays are drawn into one Media3 overlay texture. | Media3's limit is per `TextureOverlay`, and Veyro uses one. |
 | HDR footage with overlays in the preview | Tone-mapped to SDR in the preview (as export does). | Media3 blends plain bitmaps onto SDR frames only. |
 | Volume above 100% | Not offered. | Avoids clipping a single source; a boost would need a limiter that runs before Media3's 16-bit mixer. |
-| Editing gain keyframes | Stored, rendered and carried through edits, but no UI yet. | Planned with the keyframe editor (M7). |
 | Recording a voiceover | Not available; import an audio file and move it to the Voiceover track. | Needs microphone capture (and its permission). |
 | Ducking, EQ, noise reduction, audio effects | Not available. | Not in the model yet. |
 | Audio-only projects | Blocked. | Output must have a video track. |
 | Transitions, crossfades | Not available. | No transition model yet; Media3 Compositions don't support crossfading video or audio tracks. |
 | Speed changes | Not available. | Not in the timeline model yet. |
-| Keyframed crop, anchor or fit | Not available. Position, scale, rotation and opacity animate. | Crop changes the picture's shape and anchor its pivot; animating them needs their own interpolation rules. |
+| Keyframed anchor or fit | Not available. Position, scale, rotation, opacity and crop animate. | The anchor is a pivot (animating it would move the picture), and fit is a choice, not a value. |
+| Volume keyframe curves other than linear and hold | Not available. | `GainKeyframe` stores only those two. |
 | Effect parameter keyframes | Stored, evaluated (`ClipAnimation.effectsAt`), carried through edits and undo, not editable or rendered. | No effect renders yet. |
 | Selecting a keyframe by tapping its timeline marker | Not available. The keyframe bar's arrows move the playhead onto a keyframe. | The timeline's single gesture detector doesn't hit-test markers yet. |
 | Bézier curve editor, per-channel keyframes in the UI | The model and files support any cubic Bézier and per-channel keyframes. The UI offers five preset curves, applied to all channels at a moment. | UI scope. |

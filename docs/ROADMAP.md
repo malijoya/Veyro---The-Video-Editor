@@ -333,7 +333,7 @@ Original scope:
 - **Still open:** keyframed transforms, flip, background fill other than
   black, picture-in-picture.
 
-## M9 — Keyframes (code complete 2026-10-15, awaiting build and device run)
+## M9 — Keyframes (built and unit-tested 2026-10-15, awaiting device run)
 - **Done:**
   - Model: `ClipAnimation` of `KeyframeTrack`s over clip-local time, for
     position, scale, rotation and opacity (pictures and overlays) and effect
@@ -365,9 +365,13 @@ Original scope:
     keyframed clip, second in the timeline, measured on five frames against
     the model's placement.
   - All of these need a build and a device run.
-- **Still open:** keyframed crop and anchor, a curve editor, tapping
-  timeline markers, animated text styles, gain keyframe editing UI,
-  effect rendering.
+- **Then (2026-10-15):** keyframed crop (four edge channels, pictures
+  only) and volume keyframe editing in the Sound panel (add, level, linear
+  or hold, nudge, delete, clear, timeline markers).
+- **Verified:** `assembleDebug testDebugUnitTest` builds and every unit test
+  passes. The instrumented tests compile but still need a device run.
+- **Still open:** keyframed anchor, a curve editor, tapping timeline
+  markers, animated text styles, effect rendering.
 
 ## M7+ — Creative features
 Each item follows the model → evaluator → playback and export pattern:

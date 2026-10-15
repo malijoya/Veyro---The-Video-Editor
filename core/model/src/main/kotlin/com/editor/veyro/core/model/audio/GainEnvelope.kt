@@ -59,7 +59,7 @@ public data class GainEnvelope(
         if (effectiveFadeInUs > 0 && t < effectiveFadeInUs) gain *= t.toFloat() / effectiveFadeInUs
         val fadeOutStart = durationUs - effectiveFadeOutUs
         if (effectiveFadeOutUs > 0 && t > fadeOutStart) gain *= (durationUs - t).toFloat() / effectiveFadeOutUs
-        if (clip.keyframes.isNotEmpty()) gain *= keyframeGainAt(sourceInUs + t)
+        if (clip.keyframes.isNotEmpty()) gain *= clip.keyframeGainAt(sourceInUs + t)
         return gain.coerceIn(0f, 1f)
     }
 
@@ -72,21 +72,5 @@ public data class GainEnvelope(
         if (baseGain != 1f || clip.keyframes.any { it.gain != 1f }) return null
         val end = durationUs - effectiveFadeOutUs
         return if (offsetUs >= effectiveFadeInUs && offsetUs < end) end else null
-    }
-
-    private fun keyframeGainAt(sourceTimeUs: Long): Float {
-        val frames = clip.keyframes
-        if (sourceTimeUs <= frames.first().sourceTimeUs) return frames.first().gain
-        if (sourceTimeUs >= frames.last().sourceTimeUs) return frames.last().gain
-        val nextIndex = frames.indexOfFirst { it.sourceTimeUs > sourceTimeUs }
-        val previous = frames[nextIndex - 1]
-        val next = frames[nextIndex]
-        return when (previous.interpolation) {
-            GainInterpolation.HOLD -> previous.gain
-            GainInterpolation.LINEAR -> {
-                val fraction = (sourceTimeUs - previous.sourceTimeUs).toFloat() / (next.sourceTimeUs - previous.sourceTimeUs)
-                previous.gain + (next.gain - previous.gain) * fraction
-            }
-        }
     }
 }

@@ -2,6 +2,7 @@ package com.editor.veyro.feature.editor
 
 import com.editor.veyro.core.model.animation.ClipAnimation
 import com.editor.veyro.core.model.animation.Easing
+import com.editor.veyro.core.model.audio.GainInterpolation
 import com.editor.veyro.core.model.audio.TrackAudio
 import com.editor.veyro.core.model.audio.ClipAudio
 import com.editor.veyro.core.model.overlay.Overlay
@@ -16,7 +17,7 @@ import com.editor.veyro.feature.editor.overlay.OverlayControls
 import com.editor.veyro.feature.editor.overlay.PictureEditing
 import com.editor.veyro.feature.editor.overlay.StickerSheet
 import com.editor.veyro.feature.editor.keyframe.KeyframeActions
-import com.editor.veyro.feature.editor.keyframe.KeyframeBar
+import com.editor.veyro.feature.editor.keyframe.PlacementKeyframeBar
 import com.editor.veyro.feature.editor.transform.TransformActions
 import com.editor.veyro.feature.editor.transform.TransformControls
 import com.editor.veyro.feature.editor.transform.TransformTab
@@ -196,6 +197,20 @@ public fun EditorRoute(viewModel: EditorViewModel, onBack: () -> Unit, onExport:
                 }
             },
             onClearKeyframes = { id -> viewModel.clearKeyframes(id, viewport.playheadUs) },
+            onAddGainKeyframe = { id ->
+                viewModel.controller.pause()
+                viewModel.addGainKeyframe(id, viewport.playheadUs)
+            },
+            onRemoveGainKeyframe = { id -> viewModel.removeGainKeyframe(id, viewport.playheadUs) },
+            onGainKeyframeLevel = { id, gain -> viewModel.setGainKeyframeLevel(id, viewport.playheadUs, gain) },
+            onGainKeyframeCurve = { id, curve -> viewModel.setGainKeyframeCurve(id, viewport.playheadUs, curve) },
+            onNudgeGainKeyframe = { id, frames ->
+                viewModel.nudgeGainKeyframe(id, viewport.playheadUs, frames)?.let { timeUs ->
+                    viewport.scrollToTime(timeUs)
+                    viewModel.controller.seekTo(timeUs)
+                }
+            },
+            onClearGainKeyframes = viewModel::clearGainKeyframes,
         ),
     )
 }
@@ -234,6 +249,12 @@ internal class EditActions(
     val onKeyframeEasing: (ClipId, Easing) -> Unit = { _, _ -> },
     val onNudgeKeyframe: (ClipId, Int) -> Unit = { _, _ -> },
     val onClearKeyframes: (ClipId) -> Unit = {},
+    val onAddGainKeyframe: (ClipId) -> Unit = {},
+    val onRemoveGainKeyframe: (ClipId) -> Unit = {},
+    val onGainKeyframeLevel: (ClipId, Float) -> Unit = { _, _ -> },
+    val onGainKeyframeCurve: (ClipId, GainInterpolation) -> Unit = { _, _ -> },
+    val onNudgeGainKeyframe: (ClipId, Int) -> Unit = { _, _ -> },
+    val onClearGainKeyframes: (ClipId) -> Unit = {},
 )
 
 /**
@@ -691,9 +712,9 @@ private fun KeyframeSection(
     playheadUs: () -> Long,
     frameDurationUs: Long,
     enabled: Boolean,
-    actions: KeyframeActions,
+    actions: KeyframeActions<Easing>,
 ) {
-    KeyframeBar(
+    PlacementKeyframeBar(
         animation = animation,
         clipStartUs = range.first,
         clipEndUs = range.second,
@@ -795,7 +816,7 @@ private fun SelectionBar(
                             onAdd = { actions.onAddKeyframe(id) },
                             onRemove = { actions.onRemoveKeyframe(id) },
                             onJumpTo = onJumpTo,
-                            onEasing = { actions.onKeyframeEasing(id, it) },
+                            onCurve = { actions.onKeyframeEasing(id, it) },
                             onNudge = { actions.onNudgeKeyframe(id, it) },
                             onClear = { actions.onClearKeyframes(id) },
                         ),
@@ -843,6 +864,23 @@ private fun SelectionBar(
                         onSetClipAudio = actions.onSetClipAudio,
                         onSetTrackAudio = actions.onSetTrackAudio,
                         onMoveToTrack = actions.onMoveToTrack,
+                        keyframes = {
+                            GainKeyframeSection(
+                                clip = clip,
+                                playheadUs = playheadUs,
+                                frameDurationUs = state.frameDurationUs,
+                                enabled = !state.isDragging && !clip.audio.muted,
+                                actions = GainKeyframeActions(
+                                    onAdd = { actions.onAddGainKeyframe(clip.id) },
+                                    onRemove = { actions.onRemoveGainKeyframe(clip.id) },
+                                    onJumpTo = onJumpTo,
+                                    onLevel = { actions.onGainKeyframeLevel(clip.id, it) },
+                                    onCurve = { actions.onGainKeyframeCurve(clip.id, it) },
+                                    onNudge = { actions.onNudgeGainKeyframe(clip.id, it) },
+                                    onClear = { actions.onClearGainKeyframes(clip.id) },
+                                ),
+                            )
+                        },
                     )
                 }
             }

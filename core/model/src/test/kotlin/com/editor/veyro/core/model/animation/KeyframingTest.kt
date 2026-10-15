@@ -2,7 +2,9 @@ package com.editor.veyro.core.model.animation
 
 import com.editor.veyro.core.model.overlay.OverlayTransform
 import com.editor.veyro.core.model.transform.ClipTransform
+import com.editor.veyro.core.model.transform.AspectRatio
 import com.editor.veyro.core.model.transform.CropRect
+import com.editor.veyro.core.model.transform.FitMode
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -66,10 +68,11 @@ class KeyframingTest {
     fun `things that can't be animated still change the static transform`() {
         val animation = twoMoments()
         val shown = animation.transformAt(ClipTransform.DEFAULT, 0)
-        val cropped = CropRect(0.25f, 0.25f, 0.75f, 0.75f)
-        val (static, recorded) = Keyframing.recordEdit(ClipTransform.DEFAULT, animation, shown.with(crop = cropped, anchorX = 0f), 0)
-        assertEquals(cropped, static.crop)
+        val edited = shown.with(anchorX = 0f, fit = FitMode.FILL, cropAspect = AspectRatio.SQUARE)
+        val (static, recorded) = Keyframing.recordEdit(ClipTransform.DEFAULT, animation, edited, 0)
         assertEquals(0f, static.anchorX)
+        assertEquals(FitMode.FILL, static.fit)
+        assertEquals(AspectRatio.SQUARE, static.cropAspect)
         assertEquals(animation, recorded)
     }
 

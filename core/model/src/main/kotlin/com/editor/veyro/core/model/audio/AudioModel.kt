@@ -39,8 +39,8 @@ public enum class GainInterpolation {
  * @property muted silences the clip without losing [volume].
  * @property fadeInUs ramp from silence at the clip's start, in timeline µs.
  * @property fadeOutUs ramp to silence at the clip's end.
- * @property keyframes volume automation, sorted by source time. Not editable
- *   in the UI yet, but stored, carried through edits, and rendered.
+ * @property keyframes volume automation, sorted by source time. Edited with
+ *   [GainKeyframes]; stored, carried through edits, and rendered.
  */
 public data class ClipAudio(
     val volume: Float = 1f,
@@ -57,6 +57,27 @@ public data class ClipAudio(
 
     /** Whether this clip contributes no sound at all. */
     val isSilent: Boolean get() = muted || volume == 0f
+
+    /**
+     * The keyframes' level at [sourceTimeUs], 0..1: 1 without keyframes, the
+     * nearest keyframe's level before the first and after the last, and in
+     * between linear or held as the earlier keyframe says.
+     */
+    public fun keyframeGainAt(sourceTimeUs: Long): Float {
+        if (keyframes.isEmpty()) return 1f
+        if (sourceTimeUs <= keyframes.first().sourceTimeUs) return keyframes.first().gain
+        if (sourceTimeUs >= keyframes.last().sourceTimeUs) return keyframes.last().gain
+        val nextIndex = keyframes.indexOfFirst { it.sourceTimeUs > sourceTimeUs }
+        val previous = keyframes[nextIndex - 1]
+        val next = keyframes[nextIndex]
+        return when (previous.interpolation) {
+            GainInterpolation.HOLD -> previous.gain
+            GainInterpolation.LINEAR -> {
+                val fraction = (sourceTimeUs - previous.sourceTimeUs).toFloat() / (next.sourceTimeUs - previous.sourceTimeUs)
+                previous.gain + (next.gain - previous.gain) * fraction
+            }
+        }
+    }
 
     public companion object {
         public val DEFAULT: ClipAudio = ClipAudio()

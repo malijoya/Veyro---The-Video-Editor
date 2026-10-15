@@ -577,7 +577,8 @@ internal object ProjectDocumentCodec {
      * Lenient: non-finite values and repeated times are dropped, an unknown
      * easing reads as linear, and keyframes for properties the clip can't
      * have (an unknown name, placement on a sound clip, a missing effect) are
-     * ignored instead of failing the project.
+     * ignored instead of failing the project. Crop keyframes count only on
+     * video tracks.
      */
     private fun List<PropertyAnimationDocumentV8>.toModel(kind: TrackKind, effectIds: Set<String>): ClipAnimation {
         val tracks = LinkedHashMap<AnimatedProperty, KeyframeTrack>()
@@ -588,7 +589,12 @@ internal object ProjectDocumentCodec {
                     EffectParam(effectId, doc.param?.takeIf { it.isNotBlank() } ?: return@forEach)
                 }
                 kind == TrackKind.AUDIO -> return@forEach
-                else -> TransformChannel.fromKey(doc.property) ?: return@forEach
+                else -> {
+                    val channel = TransformChannel.fromKey(doc.property) ?: return@forEach
+                    // Only pictures have a crop.
+                    if (channel.isCrop && kind != TrackKind.VIDEO) return@forEach
+                    channel
+                }
             }
             val keyframes = doc.keyframes
                 .filter { it.value.isFinite() }

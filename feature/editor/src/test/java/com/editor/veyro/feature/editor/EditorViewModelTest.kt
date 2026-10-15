@@ -23,6 +23,7 @@ import com.editor.veyro.media.playback.PreviewController
 import com.editor.veyro.core.timeline.export.ExportPlan
 import com.editor.veyro.core.timeline.export.AudioSegment
 import com.editor.veyro.core.model.audio.ClipAudio
+import com.editor.veyro.core.model.audio.GainInterpolation
 import com.editor.veyro.core.model.audio.TrackAudio
 import com.editor.veyro.core.model.audio.AudioRole
 import com.editor.veyro.core.model.audio.Waveform
@@ -896,6 +897,64 @@ class EditorViewModelTest {
             vm.duplicateOverlay(text.clipId)
             assertEquals(0.33f, vm.ready().selectedOverlay!!.at(1_000_000).overlay.transform.centerY, 1e-5f)
         }
+    }
+
+    @Test
+    fun `volume keyframes are added, levelled, curved, moved and removed at the playhead, in source time`() = runTest {
+        val repository = FakeRepository(project(media("v", MediaKind.VIDEO, 6_000_000), media("song", MediaKind.AUDIO, 30_000_000)))
+        val vm = viewModel(repository)
+        val song = ClipId("clip-song")
+        fun saved() = repository.saved.value.single().timeline!!.findClip(song)!!
+        // Trim the song's start by 2 s first: keyframes then sit 2 s into the file.
+        vm.beginDrag(song, DragHandle.START)
+        vm.updateDrag(2_000_000, MAX_ZOOM, 1f, playheadUs = 0)
+        vm.endDrag()
+        val start = saved().startUs
+        assertEquals(2_000_000L, saved().sourceInUs)
+
+        vm.addGainKeyframe(song, atUs = start + 10_000) // Snapped to the frame on screen.
+        vm.addGainKeyframe(song, atUs = start + 2_000_000)
+        assertEquals(listOf(2_000_000L, 4_000_000L), saved().audio.keyframes.map { it.sourceTimeUs })
+        assertEquals(listOf(0L, 2_000_000L), vm.ready().audio().clips.single().gainKeyframeTimesUs)
+
+        vm.setGainKeyframeLevel(song, atUs = start + 2_000_000, gain = 0.25f)
+        assertEquals(0.625f, saved().audio.keyframeGainAt(3_000_000), 1e-6f) // Halfway down from 100% to 25%.
+
+        vm.setGainKeyframeCurve(song, atUs = start, GainInterpolation.HOLD)
+        assertEquals(1f, saved().audio.keyframeGainAt(3_999_999), 0f)
+
+        assertEquals(start + 2_033_334, vm.nudgeGainKeyframe(song, atUs = start + 2_000_000, frames = 1))
+        assertEquals(4_033_334L, saved().audio.keyframes.last().sourceTimeUs)
+
+        vm.removeGainKeyframe(song, atUs = start)
+        assertEquals(1, saved().audio.keyframes.size)
+        vm.clearGainKeyframes(song)
+        assertTrue(saved().audio.keyframes.isEmpty())
+        repeat(5) { vm.undo() }
+        assertEquals(listOf(2_000_000L, 4_000_000L), saved().audio.keyframes.map { it.sourceTimeUs })
+    }
+
+    @Test
+    fun `volume keyframes are refused on clips without sound`() = runTest {
+        val repository = FakeRepository(project(media("img", MediaKind.IMAGE)))
+        val vm = viewModel(repository)
+        vm.addGainKeyframe(ClipId("clip-img"), atUs = 0)
+        assertEquals(EditorMessage.CLIP_HAS_NO_AUDIO, vm.ready().message)
+    }
+
+    @Test
+    fun `cropping a keyframed picture keys the crop at the playhead`() = runTest {
+        val repository = FakeRepository(project(media("v", MediaKind.VIDEO, 6_000_000)))
+        val vm = viewModel(repository)
+        val clip = ClipId("clip-v")
+        fun saved() = repository.saved.value.single().timeline!!.findClip(clip)!!
+        vm.addKeyframe(clip, atUs = 0)
+        vm.addKeyframe(clip, atUs = 2_000_000)
+        val shown = vm.ready().selectedPicture?.at(2_000_000) ?: vm.ready().pictures.single().at(2_000_000)
+        vm.setTransform(clip, shown.transform.with(crop = CropRect(0.2f, 0f, 1f, 1f)), atUs = 2_000_000)
+        assertEquals(CropRect.FULL, saved().transform.crop) // Static crop untouched.
+        assertEquals(0.1f, vm.ready().pictures.single().at(1_000_000).transform.crop.left, 1e-6f)
+        assertEquals(0.2, saved().animation[TransformChannel.CROP_LEFT]!!.at(2_000_000)!!.value, 1e-6)
     }
 
     private companion object {

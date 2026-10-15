@@ -2,6 +2,7 @@ package com.editor.veyro.core.model.animation
 
 import com.editor.veyro.core.model.overlay.OverlayTransform
 import com.editor.veyro.core.model.transform.ClipTransform
+import com.editor.veyro.core.model.transform.CropRect
 import kotlin.math.abs
 
 /**
@@ -21,16 +22,20 @@ public object Keyframing {
     /** Changes smaller than this are rounding, not edits. */
     private const val EPSILON = 1e-5
 
-    /** The placement channels of a video clip's transform. */
+    /** The placement channels of a video clip's transform, crop edges included. */
     public fun channels(transform: ClipTransform): Map<TransformChannel, Float> = mapOf(
         TransformChannel.POSITION_X to transform.positionX,
         TransformChannel.POSITION_Y to transform.positionY,
         TransformChannel.SCALE to transform.scale,
         TransformChannel.ROTATION to transform.rotationDegrees,
         TransformChannel.OPACITY to transform.opacity,
+        TransformChannel.CROP_LEFT to transform.crop.left,
+        TransformChannel.CROP_TOP to transform.crop.top,
+        TransformChannel.CROP_RIGHT to transform.crop.right,
+        TransformChannel.CROP_BOTTOM to transform.crop.bottom,
     )
 
-    /** The placement channels of an overlay. */
+    /** The placement channels of an overlay (no crop). */
     public fun channels(transform: OverlayTransform): Map<TransformChannel, Float> = mapOf(
         TransformChannel.POSITION_X to transform.centerX,
         TransformChannel.POSITION_Y to transform.centerY,
@@ -46,9 +51,19 @@ public object Keyframing {
         scale = values[TransformChannel.SCALE] ?: transform.scale,
         rotationDegrees = values[TransformChannel.ROTATION] ?: transform.rotationDegrees,
         opacity = values[TransformChannel.OPACITY] ?: transform.opacity,
+        crop = if (values.keys.none { it.isCrop }) {
+            transform.crop
+        } else {
+            CropRect.coerced(
+                values[TransformChannel.CROP_LEFT] ?: transform.crop.left,
+                values[TransformChannel.CROP_TOP] ?: transform.crop.top,
+                values[TransformChannel.CROP_RIGHT] ?: transform.crop.right,
+                values[TransformChannel.CROP_BOTTOM] ?: transform.crop.bottom,
+            )
+        },
     )
 
-    /** [transform] with its placement channels replaced by [values], brought into range. */
+    /** [transform] with its placement channels replaced by [values], brought into range. Crop values are ignored. */
     public fun withChannels(transform: OverlayTransform, values: Map<TransformChannel, Float>): OverlayTransform = OverlayTransform.coerced(
         centerX = values[TransformChannel.POSITION_X] ?: transform.centerX,
         centerY = values[TransformChannel.POSITION_Y] ?: transform.centerY,
@@ -78,9 +93,10 @@ public object Keyframing {
      * inside the frame that starts at [localUs]). Returns the new static
      * transform and animation.
      * - Not animated: [edited] becomes the static transform.
-     * - Animated: each changed placement channel gets a keyframe at
-     *   [localUs] (added, or replacing the one there). Anchor, crop and fit
-     *   aren't animatable and change the static transform.
+     * - Animated: each changed placement channel, crop edges included, gets
+     *   a keyframe at [localUs] (added, or replacing the one there). Anchor,
+     *   crop shape lock and fit aren't animatable and change the static
+     *   transform.
      */
     public fun recordEdit(
         base: ClipTransform,
@@ -110,13 +126,13 @@ public object Keyframing {
     }
 
     /**
-     * Adds a moment at [localUs]: every placement channel gets a keyframe
-     * holding its current value there, so nothing visibly changes until the
-     * user edits it. [base] are the static channel values.
+     * Adds a moment at [localUs]: every placement channel the clip has (the
+     * keys of [base], its static values) gets a keyframe holding its current
+     * value there, so nothing visibly changes until the user edits it.
      */
     public fun addMoment(base: Map<TransformChannel, Float>, animation: ClipAnimation, localUs: Long): ClipAnimation {
         val easing = easingAt(animation, localUs) ?: Easing.Linear
-        return TransformChannel.entries.fold(animation) { result, channel ->
+        return base.keys.fold(animation) { result, channel ->
             val value = animation.valueAt(channel, localUs) ?: base.getValue(channel).toDouble()
             result.with(channel, Keyframe(localUs, value, animation[channel]?.at(localUs)?.easing ?: easing))
         }
@@ -177,7 +193,7 @@ public object Keyframing {
         localUs: Long,
     ): ClipAnimation {
         val easing = easingAt(animation, localUs) ?: Easing.Linear
-        return TransformChannel.entries.fold(animation) { result, channel ->
+        return shown.keys.fold(animation) { result, channel ->
             val before = shown.getValue(channel)
             val after = edited.getValue(channel)
             if (abs(after - before) <= EPSILON) return@fold result

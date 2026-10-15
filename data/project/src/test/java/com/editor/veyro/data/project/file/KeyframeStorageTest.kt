@@ -54,6 +54,8 @@ class KeyframeStorageTest {
         .with(TransformChannel.ROTATION, Keyframe(0, 0.0, Easing.CubicBezier(0.2, -0.4, 0.6, 1.4)))
         .with(TransformChannel.ROTATION, Keyframe(2_000_000, 1_080.0))
         .with(TransformChannel.OPACITY, Keyframe(33_367, 0.25))
+        .with(TransformChannel.CROP_LEFT, Keyframe(0, 0.0, Easing.EASE_OUT))
+        .with(TransformChannel.CROP_LEFT, Keyframe(1_000_000, 0.3))
         .with(EffectParam("fx1", "radius"), Keyframe(0, 0.0))
         .with(EffectParam("fx1", "radius"), Keyframe(2_000_000, 12.0))
 
@@ -128,5 +130,20 @@ class KeyframeStorageTest {
         assertEquals(KeyframeTrack.of(Keyframe(0, 1.0, Easing.Linear), Keyframe(2_000_000, 3.0)), main[TransformChannel.SCALE])
         // Placement keyframes on a sound clip are dropped.
         assertTrue(project.timeline!!.findClip(ClipId("m"))!!.animation.isEmpty)
+    }
+
+    @Test
+    fun `crop keyframes are kept on pictures and dropped elsewhere`() {
+        val project = project()
+        val withTextCrop = project.copy(
+            timeline = project.timeline!!.copy(
+                tracks = project.timeline!!.tracks.map { track ->
+                    track.copy(clips = track.clips.map { if (it.id == ClipId("t")) it.copy(animation = textAnimation.with(TransformChannel.CROP_TOP, Keyframe(0, 0.5))) else it })
+                },
+            ),
+        )
+        val decoded = decoded(ProjectDocumentCodec.encode(withTextCrop))
+        assertEquals(textAnimation, decoded.timeline!!.findClip(ClipId("t"))!!.animation)
+        assertEquals(0.3, decoded.timeline!!.findClip(ClipId("a"))!!.animation[TransformChannel.CROP_LEFT]!!.at(1_000_000)!!.value, 0.0)
     }
 }

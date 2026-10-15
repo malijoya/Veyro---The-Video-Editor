@@ -10,6 +10,8 @@ import com.editor.veyro.core.model.animation.Keyframing
 import com.editor.veyro.core.model.animation.TransformChannel
 import com.editor.veyro.core.model.audio.AudioRole
 import com.editor.veyro.core.model.audio.ClipAudio
+import com.editor.veyro.core.model.audio.GainInterpolation
+import com.editor.veyro.core.model.audio.GainKeyframes
 import com.editor.veyro.core.model.audio.TrackAudio
 import com.editor.veyro.core.model.audio.Waveform
 import com.editor.veyro.core.model.audio.WaveformSource
@@ -87,6 +89,8 @@ public data class TimelineClipUi(
     val overlay: Overlay? = null,
     /** Clip-local times of the clip's placement keyframes inside the clip, for the timeline's markers. */
     val keyframeTimesUs: List<Long> = emptyList(),
+    /** Clip-local times of the clip's volume keyframes inside the clip (they are stored in source time). */
+    val gainKeyframeTimesUs: List<Long> = emptyList(),
 ) {
     val endUs: Long get() = startUs + durationUs
     val sourceOutUs: Long get() = sourceInUs + durationUs
@@ -734,11 +738,75 @@ public class EditorViewModel(
         if (!clip.animation.animatesTransform) return
         val static = staticChannels(clip) ?: return
         val local = clip.localTimeOf(atUs).coerceIn(0, clip.durationUs - 1)
-        val shown = TransformChannel.entries.associateWith { channel ->
+        val shown = static.keys.associateWith { channel ->
             clip.animation.valueAt(channel, local)?.toFloat() ?: static.getValue(channel)
         }
         execute(withStatic(clip, shown, clip.animation.withoutTransform()) ?: return)
     }
+
+    // ---- Volume keyframes ----
+    // Volume keyframes live in source time (GainKeyframe): the playhead maps to sourceInUs + (playhead - startUs).
+    // Each action is one SetClipAudio edit, refused for clips without sound.
+
+    /** Adds a volume keyframe at the playhead [atUs], holding the level there now. */
+    public fun addGainKeyframe(clipId: ClipId, atUs: Long) {
+        val clip = settledClip(clipId) ?: return
+        val sourceUs = gainKeyframeTime(clip, atUs) ?: return
+        execute(EditCommand.SetClipAudio(clipId, GainKeyframes.add(clip.audio, sourceUs)))
+    }
+
+    /** Deletes the volume keyframe at the playhead [atUs] (within half a frame). */
+    public fun removeGainKeyframe(clipId: ClipId, atUs: Long) {
+        val clip = settledClip(clipId) ?: return
+        val keyframe = gainKeyframeAt(clip, atUs) ?: return
+        execute(EditCommand.SetClipAudio(clipId, GainKeyframes.remove(clip.audio, keyframe.sourceTimeUs)))
+    }
+
+    /** Sets the level (0..1, a share of the clip's volume) of the volume keyframe at the playhead [atUs]. */
+    public fun setGainKeyframeLevel(clipId: ClipId, atUs: Long, gain: Float) {
+        val clip = settledClip(clipId) ?: return
+        val keyframe = gainKeyframeAt(clip, atUs) ?: return
+        execute(EditCommand.SetClipAudio(clipId, GainKeyframes.setGain(clip.audio, keyframe.sourceTimeUs, gain)))
+    }
+
+    /** Sets how the level moves from the volume keyframe at the playhead [atUs] to the next one. */
+    public fun setGainKeyframeCurve(clipId: ClipId, atUs: Long, interpolation: GainInterpolation) {
+        val clip = settledClip(clipId) ?: return
+        val keyframe = gainKeyframeAt(clip, atUs) ?: return
+        execute(EditCommand.SetClipAudio(clipId, GainKeyframes.setInterpolation(clip.audio, keyframe.sourceTimeUs, interpolation)))
+    }
+
+    /** Moves the volume keyframe at the playhead [atUs] by [frames] frames within the clip. Returns its new timeline time. */
+    public fun nudgeGainKeyframe(clipId: ClipId, atUs: Long, frames: Int): Long? {
+        val clip = settledClip(clipId) ?: return null
+        val keyframe = gainKeyframeAt(clip, atUs) ?: return null
+        val rate = currentTimeline()?.frameRate ?: return null
+        val fromUs = clip.startUs + keyframe.sourceTimeUs - clip.sourceInUs
+        val targetUs = rate.frameToUs(rate.usToFrame(fromUs, FrameRounding.NEAREST) + frames)
+        if (targetUs !in clip || targetUs == fromUs) return null
+        execute(EditCommand.SetClipAudio(clipId, GainKeyframes.move(clip.audio, keyframe.sourceTimeUs, clip.sourceInUs + targetUs - clip.startUs)))
+        return targetUs
+    }
+
+    /** Removes every volume keyframe of [clipId]. */
+    public fun clearGainKeyframes(clipId: ClipId) {
+        val clip = settledClip(clipId) ?: return
+        if (clip.audio.keyframes.isEmpty()) return
+        execute(EditCommand.SetClipAudio(clipId, GainKeyframes.clear(clip.audio)))
+    }
+
+    /** The source time a volume keyframe added at the playhead [atUs] goes to: the start of the frame on screen. Null outside the clip. */
+    private fun gainKeyframeTime(clip: Clip, atUs: Long): Long? {
+        if (atUs !in clip) return null
+        gainKeyframeAt(clip, atUs)?.let { return it.sourceTimeUs }
+        val rate = currentTimeline()?.frameRate ?: return null
+        val local = clip.localTimeOf(rate.snapUs(atUs, FrameRounding.FLOOR)).coerceIn(0, clip.durationUs - 1)
+        return clip.sourceInUs + local
+    }
+
+    /** The volume keyframe within half a frame of the playhead [atUs]. */
+    private fun gainKeyframeAt(clip: Clip, atUs: Long) =
+        GainKeyframes.near(clip.audio, clip.sourceInUs + clip.localTimeOf(atUs), halfFrameUs())
 
     /** The clip with any change in progress saved first, so keyframe actions start from what is shown. */
     private fun settledClip(clipId: ClipId): Clip? {
@@ -988,10 +1056,15 @@ public class EditorViewModel(
                         waveform = peaks[media.id],
                         overlay = clip.overlay,
                         keyframeTimesUs = keyframeMarks(clip),
+                        gainKeyframeTimesUs = if (media.hasAudio) gainMarks(clip) else emptyList(),
                     )
                 },
             )
         }
+
+    /** Volume keyframe times inside [clip], clip-local, for the timeline's markers. */
+    private fun gainMarks(clip: Clip): List<Long> =
+        clip.audio.keyframes.map { it.sourceTimeUs - clip.sourceInUs }.filter { it in 0 until clip.durationUs }
 
     /** Placement keyframe times inside [clip], for the timeline's markers. */
     private fun keyframeMarks(clip: Clip): List<Long> =
