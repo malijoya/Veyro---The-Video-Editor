@@ -8,6 +8,11 @@ import com.editor.veyro.core.model.timeline.Timeline
 import com.editor.veyro.core.model.timeline.Track
 import com.editor.veyro.core.model.timeline.TrackId
 import com.editor.veyro.core.model.timeline.TrackKind
+import com.editor.veyro.core.model.time.FrameRate
+import com.editor.veyro.core.model.time.FrameRounding
+import com.editor.veyro.core.model.transition.CutSide
+import com.editor.veyro.core.model.transition.TransitionLimit
+import com.editor.veyro.core.model.transition.TransitionResolver
 import kotlin.math.abs
 
 /**
@@ -46,6 +51,8 @@ public object TimelineEditor {
             is EditCommand.ArrangeLayer -> arrangeLayer(timeline, command)
             is EditCommand.SetClipTransform -> setClipTransform(timeline, command, context)
             is EditCommand.SetClipAnimation -> setClipAnimation(timeline, command)
+            is EditCommand.SetTransition -> setTransition(timeline, command)
+            is EditCommand.FitTransition -> fitTransition(timeline, command, context)
         }
         return if (result is EditResult.Applied) result.copy(timeline = withoutEmptyOverlayTracks(result.timeline)) else result
     }
@@ -116,7 +123,13 @@ public object TimelineEditor {
         val leftDuration = at - clip.startUs
         // The fade-in stays at the start and the fade-out at the end. Keyframes are in source time, so each part keeps its own.
         // Each part keeps the keyframes that shape its own range (re-based to its own start), so playback across the cut is unchanged.
-        val left = clip.copy(durationUs = leftDuration, audio = clip.audio.copy(fadeOutUs = 0), animation = clip.animation.part(0, leftDuration))
+        // The transition belongs to the clip's end, which is now the right part's; the new cut between the parts is a plain cut.
+        val left = clip.copy(
+            durationUs = leftDuration,
+            audio = clip.audio.copy(fadeOutUs = 0),
+            animation = clip.animation.part(0, leftDuration),
+            transitionOut = null,
+        )
         val right = Clip(
             id = context.newClipId(),
             mediaId = clip.mediaId,
@@ -129,6 +142,7 @@ public object TimelineEditor {
             overlay = clip.overlay, // Both parts show the same text or sticker.
             transform = clip.transform, // And sit in the same place.
             animation = clip.animation.part(leftDuration, clip.durationUs),
+            transitionOut = clip.transitionOut,
         )
         val clips = track.clips.toMutableList().apply {
             set(index, left)
@@ -290,6 +304,63 @@ public object TimelineEditor {
         if (clip.animation == command.animation) return EditResult.Rejected(EditRejection.NO_CHANGE)
         return replaceClip(timeline, track, index, clip.copy(animation = command.animation))
     }
+
+    // ---- Transitions ----
+
+    private fun setTransition(timeline: Timeline, command: EditCommand.SetTransition): EditResult {
+        val located = locate(timeline, command.clipId) ?: return EditResult.Rejected(EditRejection.CLIP_NOT_FOUND)
+        val (track, index, clip) = located
+        // Removing always works (a transition left on a clip that lost its neighbour can still be cleared).
+        if (command.transition != null && (!timeline.isMagnetic(track.id) || index == track.clips.lastIndex)) {
+            return EditResult.Rejected(EditRejection.NO_CUT)
+        }
+        if (clip.transitionOut == command.transition) return EditResult.Rejected(EditRejection.NO_CHANGE)
+        return replaceClip(timeline, track, index, clip.copy(transitionOut = command.transition))
+    }
+
+    private fun fitTransition(timeline: Timeline, command: EditCommand.FitTransition, context: EditContext): EditResult {
+        val located = locate(timeline, command.clipId) ?: return EditResult.Rejected(EditRejection.CLIP_NOT_FOUND)
+        if (!timeline.isMagnetic(located.track.id)) return EditResult.Rejected(EditRejection.NO_CUT)
+        val sourceLength = TransitionLayout.sourceLengthFrom(context)
+        TransitionLayout.cutAfter(timeline, command.clipId, sourceLength) ?: return EditResult.Rejected(EditRejection.NO_CUT)
+        var current = timeline
+        // Each round trims the shortfall in whole frames. The cut's position on the frame grid can shift the need by part of a frame, so it may take another round.
+        var rounds = 0
+        while (rounds++ < FIT_ROUNDS) {
+            val cut = TransitionLayout.cutAfter(current, command.clipId, sourceLength) ?: break
+            if (cut.window.limit != TransitionLimit.MEDIA_HANDLES) break
+            // What the transition would use if media were unlimited (clip lengths still apply).
+            val wanted = TransitionResolver.resolve(
+                cut.window.transition,
+                cut.window.cutUs,
+                CutSide(cut.outgoing.durationUs, null),
+                CutSide(cut.incoming.durationUs, null),
+                current.frameRate,
+            )
+            val outHandle = sourceLength(cut.outgoing)?.let { it - cut.outgoing.sourceOutUs } ?: Long.MAX_VALUE
+            val inHandle = if (sourceLength(cut.incoming) == null) Long.MAX_VALUE else cut.incoming.sourceInUs
+            val endTrimUs = wholeFrames(wanted.outgoingHandleUs - outHandle, current.frameRate)
+            val startTrimUs = wholeFrames(wanted.incomingHandleUs - inHandle, current.frameRate)
+            var next = current
+            if (endTrimUs > 0) {
+                next = (trimEnd(next, EditCommand.TrimEnd(cut.outgoing.id, cut.outgoing.endUs - endTrimUs), context) as? EditResult.Applied)?.timeline ?: next
+            }
+            val incoming = next.findClip(cut.incoming.id)
+            if (startTrimUs > 0 && incoming != null) {
+                next = (trimStart(next, EditCommand.TrimStart(incoming.id, incoming.startUs + startTrimUs), context) as? EditResult.Applied)?.timeline ?: next
+            }
+            if (next == current) break
+            current = next
+        }
+        if (current == timeline) return EditResult.Rejected(EditRejection.NO_CHANGE)
+        return EditResult.Applied(current, command.clipId)
+    }
+
+    /** [us] rounded up to whole frames. */
+    private fun wholeFrames(us: Long, frameRate: FrameRate): Long =
+        if (us <= 0) 0 else frameRate.frameToUs(frameRate.usToFrame(us, FrameRounding.CEIL))
+
+    private const val FIT_ROUNDS = 3
 
     /** Placement keyframes need a picture or an overlay; effect keyframes need the effect. */
     private fun animatable(clip: Clip, track: Track, animation: ClipAnimation): Boolean =

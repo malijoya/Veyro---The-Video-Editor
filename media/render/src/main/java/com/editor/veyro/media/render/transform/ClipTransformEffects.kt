@@ -10,6 +10,18 @@ import com.editor.veyro.core.model.transform.ClipPlacement
 import com.editor.veyro.core.model.transform.ClipTransform
 import com.editor.veyro.core.timeline.export.SegmentTransform
 
+/** A clip's placement for the frame at a given composition time. */
+public fun interface TransformSource {
+    public fun at(presentationTimeUs: Long): ClipTransform
+
+    /**
+     * This source with the time held within [range]: frames outside it (a
+     * transition's media from beyond the clip's edge) keep the placement
+     * the clip has at its nearest edge.
+     */
+    public fun clampedTo(range: LongRange): TransformSource = TransformSource { at(it.coerceIn(range.first, range.last)) }
+}
+
 /**
  * A clip's placement over time as the renderer reads it: for each frame,
  * [at] evaluates the clip's transform and keyframes at the frame's
@@ -23,14 +35,17 @@ import com.editor.veyro.core.timeline.export.SegmentTransform
  * run in the same frame processor, after the input stage adds the item's
  * offset in the sequence (checked in the 1.11.1 sources,
  * `ExternalTextureManager`). Composition time is timeline time, because the
- * main track is packed from 0.
+ * main track is packed from 0. With transitions, the handle sequence's
+ * items run in their own frame processor; that sequence also starts at 0
+ * (gaps fill the time before its pieces), so its items see timeline time
+ * too, and the compositor pairs frames on it.
  */
-public class LiveTransform(initial: SegmentTransform) {
+public class LiveTransform(initial: SegmentTransform) : TransformSource {
     @Volatile
     public var value: SegmentTransform = initial
 
     /** The placement for the frame at composition time [presentationTimeUs]. */
-    public fun at(presentationTimeUs: Long): ClipTransform = value.at(presentationTimeUs)
+    override fun at(presentationTimeUs: Long): ClipTransform = value.at(presentationTimeUs)
 }
 
 /**
@@ -55,7 +70,7 @@ public class LiveTransform(initial: SegmentTransform) {
 @OptIn(UnstableApi::class)
 public object ClipTransformEffects {
 
-    public fun create(transform: LiveTransform, canvasWidthPx: Int, canvasHeightPx: Int): List<Effect> =
+    public fun create(transform: TransformSource, canvasWidthPx: Int, canvasHeightPx: Int): List<Effect> =
         listOf(CropStage(transform), PlacementStage(transform, canvasWidthPx, canvasHeightPx), OpacityStage(transform))
 }
 
@@ -65,7 +80,7 @@ public object ClipTransformEffects {
  * it); [PlacementStage] undoes the stretch, and both run in the same pass.
  */
 @OptIn(UnstableApi::class)
-internal class CropStage(private val transform: LiveTransform) : GlMatrixTransformation {
+internal class CropStage(private val transform: TransformSource) : GlMatrixTransformation {
     private var width = 1
     private var height = 1
 
@@ -85,7 +100,7 @@ internal class CropStage(private val transform: LiveTransform) : GlMatrixTransfo
 /** Lays the cropped picture out on the canvas, from the upright source size [CropStage] passes on. */
 @OptIn(UnstableApi::class)
 internal class PlacementStage(
-    private val transform: LiveTransform,
+    private val transform: TransformSource,
     private val canvasWidthPx: Int,
     private val canvasHeightPx: Int,
 ) : GlMatrixTransformation {
@@ -111,7 +126,7 @@ internal class PlacementStage(
  * would change nothing.)
  */
 @OptIn(UnstableApi::class)
-internal class OpacityStage(private val transform: LiveTransform) : RgbMatrix {
+internal class OpacityStage(private val transform: TransformSource) : RgbMatrix {
 
     override fun getMatrix(presentationTimeUs: Long, useHdr: Boolean): FloatArray {
         val o = transform.at(presentationTimeUs).opacity

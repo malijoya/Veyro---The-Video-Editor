@@ -9,12 +9,24 @@ import com.editor.veyro.core.model.audio.GainEnvelope
 import com.editor.veyro.core.model.overlay.Overlay
 import com.editor.veyro.core.model.overlay.OverlayContent
 import com.editor.veyro.core.model.overlay.OverlayTransform
+import com.editor.veyro.core.model.project.MediaId
 import com.editor.veyro.core.model.project.MediaKind
+import com.editor.veyro.core.model.project.MediaRef
 import com.editor.veyro.core.model.time.FrameRate
 import com.editor.veyro.core.model.transform.ClipTransform
 import com.editor.veyro.core.model.transform.CropRect
+import com.editor.veyro.core.model.timeline.Clip
+import com.editor.veyro.core.model.timeline.ClipId
+import com.editor.veyro.core.model.timeline.Timeline
+import com.editor.veyro.core.model.timeline.Track
+import com.editor.veyro.core.model.timeline.TrackId
+import com.editor.veyro.core.model.timeline.TrackKind
+import com.editor.veyro.core.model.transition.Transition
+import com.editor.veyro.core.model.transition.TransitionType
 import com.editor.veyro.core.timeline.export.AudioSegment
 import com.editor.veyro.core.timeline.export.ExportPlan
+import com.editor.veyro.core.timeline.export.ExportPlanResult
+import com.editor.veyro.core.timeline.export.ExportPlanner
 import com.editor.veyro.core.timeline.export.ExportSettings
 import com.editor.veyro.core.timeline.export.OverlayLayer
 import com.editor.veyro.core.timeline.export.SegmentGain
@@ -107,6 +119,57 @@ class CompositionPreviewInstrumentedTest {
         instrumentation.runOnMainSync { controller.seekTo(1_200_000) }
         val again = awaitState(10_000) { it.status == PreviewStatus.READY }
         assertTrue("Position ${again.positionUs}", again.positionUs in 1_000_000..1_400_000)
+    }
+
+    /**
+     * Transitions in the preview: a dissolve between two videos (the handle
+     * layer plays the second video's media before its in-point and the first
+     * one's after its out-point) and a spin into a photo play to the end
+     * through CompositionPlayer's multiple-input graph, then a seek into a
+     * transition shows a frame without errors.
+     */
+    @Test
+    fun transitionsPlayToTheEnd() {
+        val first = TestMediaFiles.mp4(File(dir, "a.mp4"), 640, 360, fps = 30, frameCount = 60) // 2 s
+        val second = TestMediaFiles.mp4(File(dir, "b.mp4"), 640, 360, fps = 30, frameCount = 60)
+        val photo = TestMediaFiles.image(File(dir, "p.png"), 320, 240, android.graphics.Bitmap.CompressFormat.PNG)
+        fun ref(id: String, file: File, kind: MediaKind, durationUs: Long) = MediaRef(
+            id = MediaId(id), uri = Uri.fromFile(file).toString(), kind = kind, displayName = file.name, mimeType = null,
+            durationUs = durationUs, widthPx = 640, heightPx = 360, rotationDegrees = 0, sizeBytes = file.length(),
+        )
+        val media = listOf(ref("a", first, MediaKind.VIDEO, 2_000_000), ref("b", second, MediaKind.VIDEO, 2_000_000), ref("p", photo, MediaKind.IMAGE, 0))
+        val timeline = Timeline(
+            listOf(
+                Track(
+                    TrackId("main"), TrackKind.VIDEO,
+                    listOf(
+                        Clip(ClipId("a"), MediaId("a"), 0, 0, 1_000_000, transitionOut = Transition(TransitionType.DISSOLVE, 500_000)),
+                        Clip(ClipId("b"), MediaId("b"), 1_000_000, 500_000, 1_000_000, transitionOut = Transition(TransitionType.SPIN_CLOCKWISE, 400_000)),
+                        Clip(ClipId("p"), MediaId("p"), 2_000_000, 0, 1_000_000),
+                    ),
+                ),
+            ),
+            FrameRate.FPS_30,
+        )
+        val plan = (ExportPlanner.plan(timeline, media, ExportSettings(640, 360, FrameRate.FPS_30)) as ExportPlanResult.Ready).plan
+        assertTrue("Both transitions fit: ${plan.transitions}", plan.transitions.size == 2)
+        instrumentation.runOnMainSync {
+            controller = PreviewController({ CompositionPlaybackEngine(context) }, scope)
+            controller.setPlan(PreviewPlan.forTimeline(plan))
+            controller.attach()
+        }
+        val ready = awaitState(15_000) { it.status == PreviewStatus.READY || it.status == PreviewStatus.ERROR }
+        assertNull("Preview error: ${ready.error}", ready.error)
+
+        instrumentation.runOnMainSync { controller.play() }
+        val ended = awaitState(20_000) { it.status == PreviewStatus.ENDED || it.status == PreviewStatus.ERROR }
+        assertNull("Preview error: ${ended.error}", ended.error)
+        assertTrue("Status ${ended.status}", ended.status == PreviewStatus.ENDED)
+
+        // Into the middle of the dissolve, as scrubbing does.
+        instrumentation.runOnMainSync { controller.seekTo(1_000_000) }
+        val again = awaitState(10_000) { it.status == PreviewStatus.READY || it.status == PreviewStatus.ERROR }
+        assertNull("Preview error: ${again.error}", again.error)
     }
 
     /**

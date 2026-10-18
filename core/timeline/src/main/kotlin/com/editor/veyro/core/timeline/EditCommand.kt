@@ -10,6 +10,7 @@ import com.editor.veyro.core.model.timeline.ClipId
 import com.editor.veyro.core.model.timeline.Timeline
 import com.editor.veyro.core.model.timeline.TrackId
 import com.editor.veyro.core.model.transform.ClipTransform
+import com.editor.veyro.core.model.transition.Transition
 
 /**
  * One edit to a [Timeline]. All times are timeline microseconds.
@@ -110,6 +111,22 @@ public sealed interface EditCommand {
      * parameter keyframes need the effect to be on the clip.
      */
     public data class SetClipAnimation(val clipId: ClipId, val animation: ClipAnimation) : EditCommand
+
+    /**
+     * Sets (or, with null, removes) the transition at the cut after
+     * [clipId] on the main track. The clip must be followed by another clip.
+     */
+    public data class SetTransition(val clipId: ClipId, val transition: Transition?) : EditCommand
+
+    /**
+     * Makes room for the transition after [clipId] when its clips lack
+     * media past their edges: trims the outgoing clip's end and the
+     * incoming clip's start, in whole frames, by just enough that the
+     * transition plays at its requested length (or as long as the clips'
+     * lengths allow). The cut moves earlier and the main track gets shorter,
+     * exactly as with two ordinary trims; it is one undoable edit.
+     */
+    public data class FitTransition(val clipId: ClipId) : EditCommand
 }
 
 /**
@@ -164,6 +181,9 @@ public enum class EditRejection {
 
     /** Keyframes for something the clip doesn't have (placement on a sound clip, a missing effect). */
     NOT_ANIMATABLE,
+
+    /** A transition on a clip that isn't followed by another clip on the main track. */
+    NO_CUT,
 }
 
 public sealed interface EditResult {

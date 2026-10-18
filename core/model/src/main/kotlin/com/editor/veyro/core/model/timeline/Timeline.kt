@@ -9,6 +9,7 @@ import com.editor.veyro.core.model.overlay.OverlayContent
 import com.editor.veyro.core.model.project.MediaId
 import com.editor.veyro.core.model.time.FrameRate
 import com.editor.veyro.core.model.transform.ClipTransform
+import com.editor.veyro.core.model.transition.Transition
 
 /** Stable identifier of a clip. */
 @JvmInline
@@ -87,6 +88,14 @@ public data class Clip(
      * [ClipAnimation] for the time semantics.
      */
     val animation: ClipAnimation = ClipAnimation.NONE,
+    /**
+     * The transition from this clip into the clip right after it, on video
+     * tracks. It belongs to the cut at this clip's end: a split leaves it on
+     * the right-hand part, and a moved clip takes it along to its new
+     * neighbour. Only the main track renders transitions; one on the last
+     * clip (no clip after it) is kept but has nothing to do.
+     */
+    val transitionOut: Transition? = null,
 ) {
     init {
         require((mediaId == null) == (overlay?.content is OverlayContent.Text)) {
@@ -158,6 +167,7 @@ public data class Track(
             require((clip.overlay != null) == (kind == TrackKind.OVERLAY)) { "Clip ${clip.id.value} doesn't belong on a ${kind.name} track" }
             require(kind == TrackKind.VIDEO || clip.transform.isDefault) { "Clip ${clip.id.value}: only pictures on video tracks have a transform" }
             require(kind != TrackKind.AUDIO || !clip.animation.animatesTransform) { "Clip ${clip.id.value}: sound has no placement to animate" }
+            require(kind == TrackKind.VIDEO || clip.transitionOut == null) { "Clip ${clip.id.value}: only pictures on video tracks have transitions" }
         }
     }
 

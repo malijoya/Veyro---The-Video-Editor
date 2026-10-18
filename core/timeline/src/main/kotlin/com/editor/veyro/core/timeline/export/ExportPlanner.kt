@@ -10,6 +10,8 @@ import com.editor.veyro.core.model.time.FrameRate
 import com.editor.veyro.core.model.timeline.Clip
 import com.editor.veyro.core.model.timeline.Timeline
 import com.editor.veyro.core.model.timeline.TrackKind
+import com.editor.veyro.core.model.transition.CutSide
+import com.editor.veyro.core.model.transition.TransitionResolver
 import kotlin.math.roundToInt
 
 /**
@@ -31,6 +33,11 @@ import kotlin.math.roundToInt
  *   whose opacity is 0 on every frame, are skipped.
  *   A sticker whose image is unavailable blocks the export, like any other
  *   missing file.
+ * - Transitions between main-track clips, fitted to their cuts on the
+ *   timeline's frame grid ([TransitionResolver]): shortened where clips are
+ *   short or lack media past their edges, left out where nothing fits
+ *   (with [ExportWarning.TRANSITIONS_SHORTENED]). The timeline's timing
+ *   doesn't change: the cut stays put, and so does all sound.
  *
  * Not rendered yet (reported as [ExportWarning]s): extra video tracks
  * (picture-in-picture) and clip effects.
@@ -165,6 +172,21 @@ public object ExportPlanner {
             }
         }
         if (blockers.isNotEmpty()) return ExportPlanResult.Blocked(blockers, problemFiles.toList())
+
+        // ---- Transitions between consecutive picture segments ----
+        val transitions = pendingVideo.zipWithNext().mapIndexedNotNull { index, (outgoing, incoming) ->
+            val transition = outgoing.clip.transitionOut ?: return@mapIndexedNotNull null
+            val window = TransitionResolver.resolve(
+                transition = transition,
+                cutUs = outgoing.clip.endUs,
+                outgoing = CutSide(outgoing.clip.durationUs, handleAfter(outgoing)),
+                incoming = CutSide(incoming.clip.durationUs, handleBefore(incoming)),
+                frameRate = timeline.frameRate,
+            )
+            if (window.limit != null) warnings += ExportWarning.TRANSITIONS_SHORTENED
+            window.takeIf { it.isActive }?.let { PlannedTransition(index, it) }
+        }
+
         // An audio-only preview where every track is muted has nothing to play.
         if (pendingVideo.isEmpty() && pendingTracks.isEmpty()) return ExportPlanResult.Blocked(setOf(ExportBlocker.NO_VIDEO))
 
@@ -207,8 +229,18 @@ public object ExportPlanner {
             if (cursor < endUs) segments += AudioSegment.Gap(endUs - cursor)
             segments.toList()
         }
-        return ExportPlanResult.Ready(ExportPlan(settings, video, audio, warnings, overlays))
+        return ExportPlanResult.Ready(ExportPlan(settings, video, audio, warnings, overlays, transitions))
     }
+
+    /** Media after the clip's out-point; null (unlimited) for photos, none when the file's length is unknown. */
+    private fun handleAfter(video: PendingVideo): Long? = when {
+        video.ref.kind == MediaKind.IMAGE -> null
+        video.ref.durationUs <= 0 -> 0
+        else -> (video.ref.durationUs - video.clip.sourceOutUs).coerceAtLeast(0)
+    }
+
+    /** Media before the clip's in-point; null (unlimited) for photos. */
+    private fun handleBefore(video: PendingVideo): Long? = if (video.ref.kind == MediaKind.IMAGE) null else video.clip.sourceInUs
 
     private class PendingVideo(val ref: MediaRef, val clip: Clip, val envelope: GainEnvelope?)
 

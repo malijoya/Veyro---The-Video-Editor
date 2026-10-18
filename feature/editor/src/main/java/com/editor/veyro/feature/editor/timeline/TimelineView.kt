@@ -18,7 +18,10 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -71,10 +74,12 @@ import com.editor.veyro.core.model.project.MediaKind
 import com.editor.veyro.core.model.time.DurationFormat
 import com.editor.veyro.core.model.timeline.ClipId
 import com.editor.veyro.core.model.timeline.TrackKind
+import com.editor.veyro.feature.editor.CutUi
 import com.editor.veyro.feature.editor.DragHandle
 import com.editor.veyro.feature.editor.R
 import com.editor.veyro.feature.editor.TimelineClipUi
 import com.editor.veyro.feature.editor.TimelineTrackUi
+import com.editor.veyro.feature.editor.transition.transitionName
 import kotlin.math.floor
 import kotlin.math.roundToInt
 
@@ -98,6 +103,8 @@ public data class TimelineMetrics(val rulerHeight: Dp, val videoTrackHeight: Dp,
  * - a selected clip shows trim handles on both edges
  * - a long press on any clip picks it up to move
  * - [snapGuideUs] draws the edge a drag snapped to
+ * - every cut on the main track has a marker ([cuts]): a tap opens its
+ *   transition, and the stretch a transition plays over is shaded
  *
  * Recomposition happens only when [tracks] or [selectedClipId] change.
  * Scrolling, zooming and playback only re-lay-out and redraw: clip
@@ -121,6 +128,10 @@ public fun TimelineView(
     onDragCancel: () -> Unit = {},
     /** Tapping a track's label mutes or unmutes the whole track. */
     onToggleTrackMute: (TimelineTrackUi) -> Unit = {},
+    /** The main track's cuts, in order. */
+    cuts: List<CutUi> = emptyList(),
+    selectedCutId: ClipId? = null,
+    onSelectCut: (ClipId) -> Unit = {},
 ) {
     val thumbnails = rememberStripThumbnails()
     val dragStart by rememberUpdatedState(onDragStart)
@@ -143,6 +154,8 @@ public fun TimelineView(
     val startInteraction by rememberUpdatedState(onInteractionStart)
     val endInteraction by rememberUpdatedState(onInteractionEnd)
     val selectFromClip: (ClipId) -> Unit = remember { { id -> selectClip(id) } }
+    val selectCut by rememberUpdatedState(onSelectCut)
+    val selectFromMarker: (ClipId) -> Unit = remember { { id -> selectCut(id) } }
 
     Column(modifier) {
         ZoomBar(viewport)
@@ -183,15 +196,20 @@ public fun TimelineView(
                     TimelineRuler(viewport, Modifier.fillMaxWidth().height(metrics.rulerHeight))
                     tracks.forEach { track ->
                         key(track.id.value) {
-                            TrackLane(
-                                track = track,
-                                selectedClipId = selectedClipId,
-                                viewport = viewport,
-                                thumbnails = thumbnails,
-                                gestures = clipGestures,
-                                onSelect = selectFromClip,
-                                modifier = Modifier.fillMaxWidth().height(metrics.trackHeight(track.kind)),
-                            )
+                            Box(Modifier.fillMaxWidth().height(metrics.trackHeight(track.kind))) {
+                                TrackLane(
+                                    track = track,
+                                    selectedClipId = selectedClipId,
+                                    viewport = viewport,
+                                    thumbnails = thumbnails,
+                                    gestures = clipGestures,
+                                    onSelect = selectFromClip,
+                                    modifier = Modifier.matchParentSize(),
+                                )
+                                if (track.magnetic && cuts.isNotEmpty()) {
+                                    CutMarkers(cuts, selectedCutId, viewport, selectFromMarker, Modifier.matchParentSize())
+                                }
+                            }
                         }
                     }
                 }
@@ -595,6 +613,94 @@ private fun TrimHandle(
                 )
             },
     )
+}
+
+private val CUT_MARKER_SIZE = 26.dp
+
+/**
+ * A marker on every cut of the main track, centred on the cut, and a
+ * shaded band over the stretch each transition plays (as fitted to the
+ * clips, so a shortened transition shows shorter). Positions follow the
+ * viewport in the layout and draw phases, like the clips.
+ */
+@Composable
+private fun CutMarkers(
+    cuts: List<CutUi>,
+    selectedCutId: ClipId?,
+    viewport: TimelineViewportState,
+    onSelect: (ClipId) -> Unit,
+    modifier: Modifier,
+) {
+    val band = MaterialTheme.colorScheme.primary.copy(alpha = 0.3f)
+    val bandEdge = MaterialTheme.colorScheme.primary
+    Layout(
+        modifier = modifier.drawBehind {
+            cuts.forEach { cut ->
+                if (cut.endUs <= cut.startUs) return@forEach
+                val span = viewport.visibleSpan(cut.startUs, cut.endUs) ?: return@forEach
+                drawRect(band, topLeft = Offset(span.start, 2.dp.toPx()), size = androidx.compose.ui.geometry.Size(span.endInclusive - span.start, size.height - 4.dp.toPx()))
+                drawLine(bandEdge, Offset(span.start, size.height - 3.dp.toPx()), Offset(span.endInclusive, size.height - 3.dp.toPx()), strokeWidth = 2.dp.toPx())
+            }
+        },
+        content = {
+            cuts.forEach { cut ->
+                key(cut.outgoingClipId.value) {
+                    CutMarker(cut, selected = cut.outgoingClipId == selectedCutId, onClick = { onSelect(cut.outgoingClipId) })
+                }
+            }
+        },
+    ) { measurables, constraints ->
+        val sizePx = CUT_MARKER_SIZE.roundToPx()
+        val placeables = measurables.map { it.measure(Constraints.fixed(sizePx, sizePx)) }
+        layout(constraints.maxWidth, constraints.maxHeight) {
+            placeables.forEachIndexed { index, placeable ->
+                val x = viewport.xForTime(cuts[index].cutUs)
+                if (x < -sizePx || x > constraints.maxWidth + sizePx) return@forEachIndexed
+                placeable.place((x - sizePx / 2f).roundToInt(), (constraints.maxHeight - sizePx) / 2)
+            }
+        }
+    }
+}
+
+@Composable
+private fun CutMarker(cut: CutUi, selected: Boolean, onClick: () -> Unit) {
+    val transition = cut.transition
+    val container = when {
+        selected -> MaterialTheme.colorScheme.primary
+        transition != null -> MaterialTheme.colorScheme.primaryContainer
+        else -> MaterialTheme.colorScheme.surfaceContainerHighest
+    }
+    val content = when {
+        selected -> MaterialTheme.colorScheme.onPrimary
+        transition != null -> MaterialTheme.colorScheme.onPrimaryContainer
+        else -> MaterialTheme.colorScheme.onSurface
+    }
+    val description = if (transition == null) {
+        stringResource(R.string.transition_a11y_add, DurationFormat.clock(cut.cutUs))
+    } else {
+        stringResource(R.string.transition_a11y_marker, transitionName(transition.type), DurationFormat.clock(cut.cutUs))
+    }
+    Box(
+        contentAlignment = Alignment.Center,
+        modifier = Modifier
+            .size(CUT_MARKER_SIZE)
+            .clip(CircleShape)
+            .background(container)
+            .border(1.dp, Color.Black.copy(alpha = 0.5f), CircleShape)
+            .clickable(onClick = onClick)
+            .semantics {
+                contentDescription = description
+                role = Role.Button
+                this.selected = selected
+            },
+    ) {
+        Icon(
+            if (transition == null) Icons.Filled.Add else VeyroIcons.Transition,
+            contentDescription = null,
+            tint = content,
+            modifier = Modifier.size(16.dp),
+        )
+    }
 }
 
 /** A vertical line at the time a drag snapped to. */

@@ -43,6 +43,9 @@ import com.editor.veyro.core.model.transform.AspectRatio
 import com.editor.veyro.core.model.transform.ClipTransform
 import com.editor.veyro.core.model.transform.CropRect
 import com.editor.veyro.core.model.transform.FitMode
+import com.editor.veyro.core.model.transition.Transition
+import com.editor.veyro.core.model.transition.TransitionAlignment
+import com.editor.veyro.core.model.transition.TransitionType
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -91,11 +94,15 @@ import kotlinx.serialization.json.jsonPrimitive
  *   channel or effect parameter), keyframes with a clip-local time in µs
  *   (since the clip's first frame), a value and the easing to the next
  *   keyframe. An optional field on the v4 shape; absent means static.
+ * - v9 (2026-10-18): transitions ("transition") on main-track clips: the
+ *   transition into the next clip, with a type key, requested length in
+ *   µs, easing and alignment. An optional field on the v4 shape; absent
+ *   means a plain cut.
  */
 
-internal const val CURRENT_SCHEMA_VERSION = 8
+internal const val CURRENT_SCHEMA_VERSION = 9
 
-// ======================= v4 / v5 / v6 / v7 / v8 (current) =======================
+// ======================= v4 / v5 / v6 / v7 / v8 / v9 (current) =======================
 
 @Serializable
 internal data class ProjectDocumentV4(
@@ -201,6 +208,23 @@ internal data class ClipDocumentV4(
     val transform: TransformDocumentV7? = null,
     /** v8. Absent or empty means no keyframes. */
     val animation: List<PropertyAnimationDocumentV8>? = null,
+    /** v9. Video tracks only. Absent means a plain cut into the next clip. */
+    val transition: TransitionDocumentV9? = null,
+)
+
+/**
+ * v9. The transition from a clip into the next one. [type] is a
+ * `TransitionType` key ("fade", "dissolve", "wipe-left", "slide-up",
+ * "zoom-in", "spin-cw", ...); [durationUs] the requested length (the
+ * player fits it to the clips); [easing] as for keyframes; [alignment]
+ * "center", "before-cut" or "after-cut".
+ */
+@Serializable
+internal data class TransitionDocumentV9(
+    val type: String,
+    val durationUs: Long,
+    val easing: String = "linear",
+    val alignment: String = "center",
 )
 
 /**
@@ -488,7 +512,7 @@ internal object ProjectDocumentCodec {
         when {
             version > CURRENT_SCHEMA_VERSION -> DecodeResult.NewerSchema(version)
             // v5 to v8 only added optional fields to the v4 shape.
-            version in 4..8 -> DecodeResult.Ok(json.decodeFromJsonElement(ProjectDocumentV4.serializer(), element).toModel().validated())
+            version in 4..9 -> DecodeResult.Ok(json.decodeFromJsonElement(ProjectDocumentV4.serializer(), element).toModel().validated())
             version == 3 -> DecodeResult.Ok(json.decodeFromJsonElement(ProjectDocumentV3.serializer(), element).toModel().validated())
             version == 2 -> DecodeResult.Ok(json.decodeFromJsonElement(ProjectDocumentV2.serializer(), element).toModel())
             version == 1 -> DecodeResult.Ok(json.decodeFromJsonElement(ProjectDocumentV1.serializer(), element).toModel())
@@ -555,6 +579,9 @@ internal object ProjectDocumentCodec {
                                 overlay = clip.overlay?.toDocument(),
                                 transform = clip.transform.takeUnless { it.isDefault }?.toDocument(),
                                 animation = clip.animation.takeUnless { it.isEmpty }?.toDocument(),
+                                transition = clip.transitionOut?.let {
+                                    TransitionDocumentV9(it.type.key, it.durationUs, Easing.key(it.easing), it.alignment.key)
+                                },
                             )
                         },
                     )
@@ -604,6 +631,21 @@ internal object ProjectDocumentCodec {
             if (keyframes.isNotEmpty()) tracks[property] = KeyframeTrack(keyframes)
         }
         return if (tracks.isEmpty()) ClipAnimation.NONE else ClipAnimation(tracks)
+    }
+
+    /**
+     * Lenient: an unknown type drops the transition (a plain cut), the length
+     * is clamped to the allowed range, an unknown easing reads as the type's
+     * default, and an unknown alignment as centred.
+     */
+    private fun TransitionDocumentV9.toModel(): Transition? {
+        val type = TransitionType.fromKey(type) ?: return null
+        return Transition(
+            type = type,
+            durationUs = durationUs.coerceIn(Transition.MIN_DURATION_US, Transition.MAX_DURATION_US),
+            easing = Easing.parse(easing) ?: type.defaultEasing,
+            alignment = TransitionAlignment.fromKey(alignment) ?: TransitionAlignment.CENTER,
+        )
     }
 
     private fun ClipTransform.toDocument() = TransformDocumentV7(
@@ -814,6 +856,8 @@ internal object ProjectDocumentCodec {
                                     // Only pictures on video tracks are placed; a transform anywhere else is ignored.
                                     transform = clip.transform?.takeIf { kind == TrackKind.VIDEO }?.toModel() ?: ClipTransform.DEFAULT,
                                     animation = clip.animation?.toModel(kind, clip.effects.map { it.id }.toSet()) ?: ClipAnimation.NONE,
+                                    // Only pictures on video tracks have transitions; one anywhere else is ignored.
+                                    transitionOut = clip.transition?.takeIf { kind == TrackKind.VIDEO }?.toModel(),
                                 )
                             },
                         )

@@ -6,6 +6,7 @@ import com.editor.veyro.core.model.overlay.OverlayContent
 import com.editor.veyro.core.model.project.MediaKind
 import com.editor.veyro.core.model.time.FrameRate
 import com.editor.veyro.core.model.transform.ClipTransform
+import com.editor.veyro.core.model.transition.TransitionWindow
 import kotlin.math.roundToLong
 
 /**
@@ -103,6 +104,20 @@ public data class SegmentTransform(val base: ClipTransform, val animation: ClipA
     public fun at(timelineUs: Long): ClipTransform = animation.transformAt(base, timelineUs - startUs)
 }
 
+/**
+ * A transition between video segments [outgoingIndex] and
+ * [outgoingIndex] + 1, already fitted to its cut ([TransitionWindow]).
+ * Only transitions that happen are planned.
+ */
+public data class PlannedTransition(val outgoingIndex: Int, val window: TransitionWindow) {
+    init {
+        require(outgoingIndex >= 0) { "Invalid segment index" }
+        require(window.isActive) { "Only transitions that happen are planned" }
+    }
+
+    val incomingIndex: Int get() = outgoingIndex + 1
+}
+
 /** One piece of an audio track, in time order. */
 public sealed interface AudioSegment {
     public val durationUs: Long
@@ -194,6 +209,12 @@ public enum class ExportWarning {
 
     /** Text or stickers that run past the end of the picture are cut there (or left out if they start after it). */
     OVERLAYS_TRIMMED_TO_VIDEO,
+
+    /**
+     * Some transitions are shorter than set, or plain cuts, because their
+     * clips are too short or have too little media past their edges.
+     */
+    TRANSITIONS_SHORTENED,
 }
 
 /** Why an export can't run at all. */
@@ -221,6 +242,9 @@ public enum class ExportBlocker {
  *   nothing audible are left out.
  * @property overlays text and stickers over the picture, bottom to top,
  *   within `[0, durationUs]`. Empty without video.
+ * @property transitions transitions between consecutive video segments,
+ *   in order, never overlapping. See [TransitionPlan] for how they are
+ *   drawn.
  */
 public data class ExportPlan(
     val settings: ExportSettings,
@@ -228,6 +252,7 @@ public data class ExportPlan(
     val audioTracks: List<List<AudioSegment>>,
     val warnings: Set<ExportWarning> = emptySet(),
     val overlays: List<OverlayLayer> = emptyList(),
+    val transitions: List<PlannedTransition> = emptyList(),
 ) {
     init {
         require(video.isNotEmpty() || audioTracks.isNotEmpty()) { "A plan needs something to play" }
@@ -236,6 +261,10 @@ public data class ExportPlan(
         require(audioTracks.all { it.sumOf { s -> s.durationUs } == length }) { "Every audio track must match the plan's length" }
         require(overlays.isEmpty() || video.isNotEmpty()) { "Overlays need a picture to draw on" }
         require(overlays.all { it.endUs <= length }) { "Overlays must end within the plan" }
+        require(transitions.all { it.incomingIndex < video.size }) { "Transitions join two video segments" }
+        require(transitions.zipWithNext().all { (a, b) -> a.outgoingIndex < b.outgoingIndex && a.window.endUs <= b.window.startUs }) {
+            "Transitions are in order and don't overlap"
+        }
     }
 
     val durationUs: Long
@@ -247,10 +276,14 @@ public data class ExportPlan(
 
     /** Each video segment's placement over time, in order. The one source of per-frame placement for preview and export. */
     public fun segmentTransforms(): List<SegmentTransform> {
+        val starts = segmentStarts()
+        return video.mapIndexed { index, segment -> SegmentTransform(segment.transform, segment.animation, starts[index]) }
+    }
+
+    /** Where each video segment starts on the timeline. Segments are back to back from 0. */
+    public fun segmentStarts(): List<Long> {
         var startUs = 0L
-        return video.map { segment ->
-            SegmentTransform(segment.transform, segment.animation, startUs).also { startUs += segment.durationUs }
-        }
+        return video.map { segment -> startUs.also { startUs += segment.durationUs } }
     }
 }
 

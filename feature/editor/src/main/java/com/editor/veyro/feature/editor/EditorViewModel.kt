@@ -37,6 +37,8 @@ import com.editor.veyro.core.model.timeline.TrackKind
 import com.editor.veyro.core.model.transform.ClipPlacement
 import com.editor.veyro.core.model.transform.ClipTransform
 import com.editor.veyro.core.model.transform.FitMode
+import com.editor.veyro.core.model.transition.Transition
+import com.editor.veyro.core.model.transition.TransitionLimit
 import com.editor.veyro.core.timeline.EditCommand
 import com.editor.veyro.core.timeline.EditContext
 import com.editor.veyro.core.timeline.EditHistory
@@ -48,6 +50,7 @@ import com.editor.veyro.core.timeline.MediaBounds
 import com.editor.veyro.core.timeline.Snap
 import com.editor.veyro.core.timeline.Snapper
 import com.editor.veyro.core.timeline.TimelineEditor
+import com.editor.veyro.core.timeline.TransitionLayout
 import com.editor.veyro.core.timeline.export.ExportOptions
 import com.editor.veyro.core.timeline.export.ExportPlanResult
 import com.editor.veyro.core.timeline.export.ExportPlanner
@@ -170,6 +173,30 @@ public data class PictureUi(
         ClipPlacement(transform, sourceWidthPx, sourceHeightPx, canvasWidthPx, canvasHeightPx)
 }
 
+/**
+ * A cut between two clips on the main track, with its transition as it
+ * plays ([TransitionLayout]): the timeline marks it, and the transition
+ * panel edits it.
+ *
+ * @property startUs where the transition starts as it plays; equal to
+ *   [endUs] when there is none or nothing fits.
+ * @property frames frames the transition plays for, at the project's rate;
+ *   [requestedFrames] is what its length asks for.
+ * @property limit why it plays shorter than set, if it does.
+ */
+@Immutable
+public data class CutUi(
+    val outgoingClipId: ClipId,
+    val incomingClipId: ClipId,
+    val cutUs: Long,
+    val transition: Transition?,
+    val startUs: Long = cutUs,
+    val endUs: Long = cutUs,
+    val frames: Int = 0,
+    val requestedFrames: Int = 0,
+    val limit: TransitionLimit? = null,
+)
+
 /** An image of the project offered as a sticker. */
 @Immutable
 public data class StickerChoice(val mediaId: MediaId, val uri: String, val title: String)
@@ -234,6 +261,10 @@ public sealed interface EditorUiState {
         val pictures: List<PictureUi> = emptyList(),
         /** One frame of the project's rate, in µs. A keyframe within half of it from the playhead counts as the one at the playhead. */
         val frameDurationUs: Long = 33_334,
+        /** Every cut on the main track, in order, with its transition. */
+        val cuts: List<CutUi> = emptyList(),
+        /** The cut whose transition is being edited. Never at the same time as [selectedClip]. */
+        val selectedCut: CutUi? = null,
     ) : EditorUiState {
         val selectedTrack: TimelineTrackUi? get() = selectedClip?.let { clip -> tracks.firstOrNull { it.id == clip.trackId } }
 
@@ -284,6 +315,9 @@ public class EditorViewModel(
 
     private val selectedId = savedState.getStateFlow<String?>(KEY_SELECTED, null)
 
+    /** The outgoing clip of the cut whose transition panel is open. */
+    private val selectedCutId = savedState.getStateFlow<String?>(KEY_SELECTED_CUT, null)
+
     private data class Drag(val base: Timeline, val clipId: ClipId, val handle: DragHandle, val originUs: Long)
     private data class Draft(val timeline: Timeline, val guideUs: Long?, val command: EditCommand? = null)
 
@@ -316,13 +350,17 @@ public class EditorViewModel(
     /** UI state plus the matching preview plan. The plan goes to the controller, not the UI. */
     private class Built(val state: EditorUiState, val plan: PreviewPlan?, val persisted: Timeline? = null)
 
-    private val projectAndSelection = combine(repository.project(projectId), selectedId, analysed, overlayDraft, transformDraft) { project, selected, peaks, overlay, transform ->
+    private val selection = combine(selectedId, selectedCutId) { clip, cut -> Selection(clip, cut) }
+
+    private data class Selection(val clip: String?, val cut: String?)
+
+    private val projectAndSelection = combine(repository.project(projectId), selection, analysed, overlayDraft, transformDraft) { project, selected, peaks, overlay, transform ->
         ProjectView(project, selected, peaks, overlay, transform)
     }
 
     private data class ProjectView(
         val project: Project?,
-        val selected: String?,
+        val selected: Selection,
         val waveforms: Map<MediaId, Waveform>,
         val overlayDraft: OverlayDraft?,
         val transformDraft: TransformDraft?,
@@ -354,12 +392,13 @@ public class EditorViewModel(
             val rendered = transformEdit?.let { saved.withTransform(it.clipId, it.transform, it.animation) } ?: saved
             val preview = previewPlanFor(rendered, project, peaks)
             val tracks = tracksUi(shown, mediaById, peaks)
+            val cuts = cutsUi(shown, mediaById)
             Built(
                 EditorUiState.Ready(
                     projectName = project.name,
                     tracks = tracks,
                     durationUs = shown.durationUs,
-                    selectedClip = selected?.let { id -> tracks.firstNotNullOfOrNull { t -> t.clips.firstOrNull { it.id.value == id } } },
+                    selectedClip = selected.clip?.let { id -> tracks.firstNotNullOfOrNull { t -> t.clips.firstOrNull { it.id.value == id } } },
                     previewTrackKind = preview?.first,
                     canUndo = editing.history.canUndo,
                     canRedo = editing.history.canRedo,
@@ -375,6 +414,8 @@ public class EditorViewModel(
                     },
                     pictures = picturesUi(transformEdit?.let { shown.withTransform(it.clipId, it.transform, it.animation) } ?: shown, mediaById),
                     frameDurationUs = shown.frameRate.frameToUs(1),
+                    cuts = cuts,
+                    selectedCut = selected.cut?.let { id -> cuts.firstOrNull { it.outgoingClipId.value == id } },
                     saveStatus = when {
                         editing.autosave is ProjectAutosave.Status.Failed -> SaveStatus.FAILED
                         editing.autosave is ProjectAutosave.Status.Saving -> SaveStatus.SAVING
@@ -417,6 +458,28 @@ public class EditorViewModel(
         if (overlayDraft.value?.clipId != id) commitOverlay()
         if (transformDraft.value?.clipId != id) commitTransform()
         savedState[KEY_SELECTED] = id?.value
+        savedState[KEY_SELECTED_CUT] = null
+    }
+
+    /**
+     * Opens the transition panel for the cut after [outgoingClipId] (or
+     * closes it with null). A cut and a clip are never selected together.
+     */
+    public fun selectCut(outgoingClipId: ClipId?) {
+        if (outgoingClipId != null) selectClip(null)
+        savedState[KEY_SELECTED_CUT] = outgoingClipId?.value
+    }
+
+    // ---- Transitions ----
+
+    /** Sets the transition at the cut after [outgoingClipId], or removes it with null. One undoable edit. */
+    public fun setTransition(outgoingClipId: ClipId, transition: Transition?) {
+        execute(EditCommand.SetTransition(outgoingClipId, transition))
+    }
+
+    /** Trims the clips at the cut after [outgoingClipId] just enough for its transition to play in full. One undoable edit. */
+    public fun fitTransition(outgoingClipId: ClipId) {
+        execute(EditCommand.FitTransition(outgoingClipId))
     }
 
     // ---- One-shot edits ----
@@ -989,7 +1052,12 @@ public class EditorViewModel(
             is EditResult.Applied -> {
                 history.value = history.value.record(command, timeline, result.timeline)
                 save(result.timeline)
-                if (command is EditCommand.Delete) selectClip(null) else result.affectedClipId?.let(::selectClip)
+                when (command) {
+                    is EditCommand.Delete -> selectClip(null)
+                    // The transition panel stays open on its cut.
+                    is EditCommand.SetTransition, is EditCommand.FitTransition -> Unit
+                    else -> result.affectedClipId?.let(::selectClip)
+                }
             }
             is EditResult.Rejected -> message.value = when (result.reason) {
                 EditRejection.TOO_CLOSE_TO_EDGE -> EditorMessage.SPLIT_TOO_CLOSE
@@ -1062,6 +1130,34 @@ public class EditorViewModel(
             )
         }
 
+    /** Every cut of the main track, with its transition fitted the way preview and export will play it. */
+    private fun cutsUi(timeline: Timeline, mediaById: Map<MediaId, MediaRef>): List<CutUi> {
+        val clips = timeline.mainTrack?.clips.orEmpty()
+        val resolved = TransitionLayout.resolve(timeline) { clip ->
+            val media = clip.mediaId?.let(mediaById::get)
+            when {
+                media == null -> clip.sourceOutUs
+                media.kind == MediaKind.IMAGE -> null
+                media.durationUs <= 0 -> clip.sourceOutUs
+                else -> media.durationUs
+            }
+        }.associateBy { it.outgoingIndex }
+        return clips.zipWithNext().mapIndexed { index, (outgoing, incoming) ->
+            val window = resolved[index]?.window
+            CutUi(
+                outgoingClipId = outgoing.id,
+                incomingClipId = incoming.id,
+                cutUs = outgoing.endUs,
+                transition = outgoing.transitionOut,
+                startUs = window?.startUs ?: outgoing.endUs,
+                endUs = window?.endUs ?: outgoing.endUs,
+                frames = window?.frames ?: 0,
+                requestedFrames = window?.requestedFrames ?: 0,
+                limit = window?.limit,
+            )
+        }
+    }
+
     /** Volume keyframe times inside [clip], clip-local, for the timeline's markers. */
     private fun gainMarks(clip: Clip): List<Long> =
         clip.audio.keyframes.map { it.sourceTimeUs - clip.sourceInUs }.filter { it in 0 until clip.durationUs }
@@ -1114,6 +1210,7 @@ public class EditorViewModel(
 
     private companion object {
         const val KEY_SELECTED = "selectedClipId"
+        const val KEY_SELECTED_CUT = "selectedCutClipId"
 
         /** A duplicate sits this far (a fraction of the canvas) right of and below the original. */
         const val DUPLICATE_OFFSET = 0.03f

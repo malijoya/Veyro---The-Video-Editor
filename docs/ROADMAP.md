@@ -373,10 +373,37 @@ Original scope:
 - **Still open:** keyframed anchor, a curve editor, tapping timeline
   markers, animated text styles, effect rendering.
 
+## M10 — Transitions (code complete 2026-10-18, awaiting build and device run)
+- **Done:**
+  - Media3 1.11.1 evaluated: no transition API; multi-sequence compositing
+    with per-input alpha and geometry, straight-alpha blend, closest-frame
+    pairing; no custom compositor program, no HDR input. Decision: our own
+    GL stage for every transition, Media3 only stacks two layers.
+  - Model: `Transition` on main-track clips (fade, dissolve, wipe and slide
+    in four directions, zoom in/out, spin both ways), length, easing and
+    alignment. Schema v9.
+  - `TransitionResolver`: whole frames on the timeline grid, exact window
+    boundaries, shortening for missing handles or short clips (half of each
+    clip at most), plain cut when nothing fits. The cut, timing and sound
+    never move.
+  - `TransitionLook` / `TransitionComposite`: one definition of every
+    transition, the same whichever picture is on top.
+  - Render: handle sequence under the main track, `TransitionStage` (custom
+    shader) on every item involved, compositor settings; identical in
+    preview (CompositionPlayer with the multiple-input graph) and export.
+  - Editor: cut markers and shaded transition spans on the timeline, the
+    transition panel (kind, direction, length, timing, position, Play, Trim
+    to fit, Remove), all undoable.
+- **Tests:** see "Transitions → Verification" in ARCHITECTURE.md (JVM:
+  resolver, looks, plan composited frame by frame at 24/30/60 fps and three
+  sizes, random clip lengths, edits, storage; instrumented: exported frames
+  decoded and measured, preview playback).
+- **Still open:** audio crossfades, transitions on extra tracks, transition
+  parameters, a transition preset browser with thumbnails.
+
 ## M7+ — Creative features
 Each item follows the model → evaluator → playback and export pattern:
 - Speed ramps.
-- Transitions.
 - Color and LUT filters (OpenGL ES `GlEffect`).
 - Audio mixing, volume keyframes and fades.
 - Aspect ratio and canvas.

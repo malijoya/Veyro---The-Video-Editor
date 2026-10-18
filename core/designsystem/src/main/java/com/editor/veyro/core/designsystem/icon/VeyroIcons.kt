@@ -877,6 +877,21 @@ public object VeyroIcons {
         }
     private var _layers: ImageVector? = null
 
+    /** Material "swap_horiz": a transition between two clips. */
+    public val Transition: ImageVector
+        get() {
+            _transition?.let { return it }
+            return materialIcon(name = "Veyro.Transition") {
+                addPath(
+                    pathData = addPathNodes(
+                        "M6.99,11L3,15l3.99,4v-3H14v-2H6.99v-3zM21,9l-3.99,-4v3H10v2h7.01v3L21,9z",
+                    ),
+                    fill = SolidColor(Color.Black),
+                )
+            }.also { _transition = it }
+        }
+    private var _transition: ImageVector? = null
+
     public val AlignLeft: ImageVector
         get() {
             _alignLeft?.let { return it }

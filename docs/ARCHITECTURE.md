@@ -42,7 +42,7 @@ decision changes.
 | Module | Type | Status | Responsibility |
 |---|---|---|---|
 | `:app` | Android app | exists | Activity, Navigation 3 back stack, adaptive navigation suite, manual DI (`AppContainer`). No business logic. |
-| `:core:model` | JVM | exists | Time base (`TimeUs`, `FrameRate`, `DurationFormat`), `Project`, `MediaRef`, `ProjectName` rules, the timeline (`Timeline`/`Track`/`Clip`, `DefaultArrangement`), audio, overlays, transforms, and the keyframe engine (`animation`: `Easing`, `KeyframeTrack`, `ClipAnimation`, `Keyframing`). |
+| `:core:model` | JVM | exists | Time base (`TimeUs`, `FrameRate`, `DurationFormat`), `Project`, `MediaRef`, `ProjectName` rules, the timeline (`Timeline`/`Track`/`Clip`, `DefaultArrangement`), audio, overlays, transforms, the keyframe engine (`animation`: `Easing`, `KeyframeTrack`, `ClipAnimation`, `Keyframing`) and transitions (`transition`: `Transition`, `TransitionResolver`, `TransitionLook`, `TransitionComposite`). |
 | `:core:designsystem` | Android + Compose | exists | Dark theme tokens (color, type, spacing, shapes), icons, shared components, `MediaThumbnail` and its `ThumbnailProvider` seam. |
 | `:core:timeline` | JVM | exists | Editing domain: `EditCommand`, `TimelineEditor` (trim, split, move/reorder, delete, close gaps), `Snapper` (edge, playhead and frame snapping, zoom-independent threshold), `TimelinePatch` and `EditHistory` (patch-based undo/redo). `export.ExportPlanner` turns a timeline into an `ExportPlan` (segments, source ranges, background audio with gaps, settings, warnings and blockers). |
 | `:data:project` | Android | exists | `ProjectRepository`. `FileProjectRepository` stores versioned JSON documents through `ProjectDocumentStore` (safe writes with backup). `RoomProjectIndex` holds list metadata. Also `ProjectAutosave`, `ProjectInterchange` (portable project files), `ProjectFileGateway` (Storage Access Framework) and `SourceReferencePolicy`. |
@@ -53,7 +53,7 @@ decision changes.
 | `:media:playback` | Android + Compose | exists | `PreviewPlan` (one asset, or a whole timeline's render plan), `PreviewController` (lifecycle, timing, errors), `PlaybackEngine` with `ExoPlaybackEngine` (single assets) and `CompositionPlaybackEngine` (the editor's timeline, every track mixed), preview composables. Holds the preview UI widgets because they bind directly to the Media3 `Player`. |
 | `:media:export` | Android | exists | `ExportPipeline` (render → verify → publish, the only path to a completed export), `CompositionFactory` (plan → Media3 `Composition`), `Media3VideoRenderer` (Transformer, real progress, cancel), `AndroidOutputVerifier` (MediaExtractor + frame decode), `AndroidExportPublisher` (MediaStore or SAF document). |
 | `:feature:export` | Android + Compose | exists | Export screen: size and frame-rate choice, destination, progress, cancel, completion and failure states. |
-| `:media:render` | Android | exists | `CompositionFactory`: the one translation of a render plan into a Media3 `Composition`, used by preview (`CompositionPlayer`) and export (Transformer). Per-item gain through Media3 `GainProcessor`. Overlays: `OverlayPainter` (the one drawing routine for text and stickers), `FontResolver` (family and glyph fallback), `StickerImages`, and `TimelineOverlay` (a Media3 `BitmapOverlay`). Clip transforms: `ClipTransformEffects` (crop, placement and opacity stages, read live from a `LiveTransform`). GL effects and transitions will live here too (M7+). |
+| `:media:render` | Android | exists | `CompositionFactory`: the one translation of a render plan into a Media3 `Composition`, used by preview (`CompositionPlayer`) and export (Transformer). Per-item gain through Media3 `GainProcessor`. Overlays: `OverlayPainter` (the one drawing routine for text and stickers), `FontResolver` (family and glyph fallback), `StickerImages`, and `TimelineOverlay` (a Media3 `BitmapOverlay`). Clip transforms: `ClipTransformEffects` (crop, placement and opacity stages, read live from a `LiveTransform`). Transitions: the handle sequence, `TransitionStage` (custom GL shader) and `TransitionCompositorSettings`. Clip effects will live here too. |
 | `:feature:editor` | Android + Compose | exists | Editor screen: preview, timeline UI (ruler, tracks, filmstrips, playhead, zoom), selection, playhead/player sync. |
 
 Modules are created in the milestone that first gives them real code, never
@@ -165,8 +165,9 @@ Android `namespace` is the same string:
     microseconds. Today it holds one whole asset.
   - The timeline milestones will build plans from clip sequences. Multi-segment
     seeking and positioning are already implemented and tested.
-  - **Multi-layer compositing is not implemented.** Overlapping tracks,
-    transitions and effects need a compositing renderer (M7).
+  - **Multi-layer compositing** is used only for transitions (a second,
+    handle sequence under the main track; see "Transitions"). Extra video
+    tracks (picture-in-picture) are not composited yet.
 - **Player lifetime:**
   - The ViewModel owns the controller, so recomposition and configuration
     changes never recreate the player.
@@ -398,8 +399,9 @@ ExoPlayer and Transformer without conversion.
   - v4: project settings (canvas, frame rate, snapping, photo length),
     clip effects, and media `accessPersisted`. The frame rate moved from the
     timeline into settings.
-  - v5–v8: clip and track audio, overlays, clip transforms, clip keyframes.
-    Each is an optional field on the v4 shape (see `ProjectDocument.kt`).
+  - v5–v9: clip and track audio, overlays, clip transforms, clip keyframes,
+    transitions. Each is an optional field on the v4 shape (see
+    `ProjectDocument.kt`).
 
   Old versions are decoded and mapped forward in `ProjectDocumentCodec`, and
   documents are always saved in the current version. Each version has a
@@ -763,6 +765,181 @@ editor: PictureUi.at(t) / OverlayUi.at(t) (canvas, panels) ─ Keyframing (edit 
   reads as linear, placement keyframes on sound clips are ignored, and crop
   keyframes count only on video tracks.
 
+## Transitions (M10)
+
+```
+Clip.transitionOut (core:model) ─► TransitionResolver ─► TransitionWindow (frames on the timeline grid)
+                                         │
+ExportPlanner ─► ExportPlan.transitions ─► TransitionPlan: handle pieces, mainLook / pieceLook (TransitionLook)
+                                         │
+CompositionFactory: main sequence (top) + handle sequence (bottom) ─► TransitionStage per item ─► DefaultVideoCompositor
+editor: CutUi (TransitionLayout) ─► timeline markers, transition panel ─► SetTransition / FitTransition
+```
+
+### Media3 evaluation (1.11.1, checked in the release binaries)
+
+What Media3 offers, and what it doesn't, decided the design:
+
+- **No transition API.** Nothing in `media3-effect` or `media3-transformer`
+  blends two items of a sequence. A sequence plays its items strictly one
+  after another, so two pictures are on screen together only from two
+  sequences.
+- **Multi-sequence compositing exists** in both Transformer
+  (`MultipleInputVideoGraph`, chosen automatically when a composition has
+  more than one picture sequence) and `CompositionPlayer` (which defaults to
+  `SingleInputVideoGraph` and logs "Setting multi-sequence Composition with
+  single input video graph"; the preview sets
+  `MultipleInputVideoGraph.Factory` explicitly).
+- **`DefaultVideoCompositor`**: input 0 (the first sequence) is primary and
+  drawn on top; each secondary input contributes the frame whose timestamp
+  is closest to the primary frame's. Blending is straight alpha
+  (`glBlendFuncSeparate(SRC_ALPHA, ONE_MINUS_SRC_ALPHA, ONE, ONE_MINUS_SRC_ALPHA)`),
+  honouring each input texture's alpha times the input's `alphaScale`.
+  `VideoCompositorSettings.getOverlaySettings(inputId, timeUs)` gives
+  per-input, per-frame alpha, scale, rotation and anchors, asked with each
+  input frame's own timestamp.
+- **Not supported by the compositor:** a custom blend program
+  (`DefaultCompositorGlProgram` and its interface are package-private), HDR
+  input ("HDR input is not supported"), and inputs with different
+  `ColorInfo`s.
+- **Video gaps** are supported in both (blank frames;
+  `experimentalSetForceVideoTrack` when a sequence starts with one).
+
+So dissolve, slide, zoom and spin *could* be approximated with overlay
+settings alone, but wipe (a moving, soft-edged mask) and fade-through-black
+(per-phase brightness) cannot, and overlay settings would make layer
+geometry differ between preview code and our model. **Every transition is
+therefore rendered by our own GL stage**, from one shared definition; the
+compositor only stacks two layers.
+
+### Model and timing
+
+- **Where:** `Clip.transitionOut` on main-track clips: the transition at the
+  cut after the clip. A split leaves it on the right-hand part (the new
+  inner cut is plain); a moved clip takes it to its new neighbour; on the
+  last clip it is kept but inactive. `SetTransition` (set or remove) and
+  `FitTransition` are ordinary commands, so undo/redo is exact.
+- **What:** `Transition(type, durationUs, easing, alignment)`. Types: fade
+  (through black), dissolve, wipe ←→↑↓, slide (push) ←→↑↓, zoom in/out,
+  spin ↻↺. Timing: any `Easing` (the panel offers linear, ease in, ease out,
+  ease in-out). Alignment: centred on the cut, ending at it, or starting at
+  it.
+- **The cut never moves.** A transition doesn't change the timeline's
+  length, the main track's packing, sound, overlays or keyframes. The main
+  track still shows the outgoing clip until the cut and the incoming one
+  from it; the other picture comes from the media beyond its clip's edge
+  (the *handle*): the incoming clip's media before its in-point, the
+  outgoing clip's after its out-point.
+- **Frames (`TransitionResolver`).** The length is rounded to whole frames
+  of the timeline's rate (at least one). With `cf` the first frame starting
+  at or after the cut, the window is frames `[cf − lead, cf + trail)`:
+  exactly N timeline frames, lead frames still showing the outgoing clip on
+  the main track (an odd frame goes after the cut when centred). An empty
+  half ends on the cut itself, so there is no sliver. Progress for frame i
+  of N is (i + 1) / (N + 1): no frame inside repeats the picture just
+  outside, and the curve is symmetric. Windows are on the *timeline's*
+  grid, so an export at another rate samples the same transition in time.
+
+### Overlap and insufficient handles
+
+- **Insufficient handles:** where both pictures are on screen, the hidden
+  one must exist in the file. If it doesn't, the transition is shortened,
+  keeping its alignment, to the longest whole-frame length that fits
+  (`TransitionLimit.MEDIA_HANDLES`), down to a plain cut. Photos have
+  unlimited handles. A centred fade shows one picture at a time and needs
+  none. The requested length is kept, so it comes back once there is room.
+  The panel says how long it plays and why; **Trim to fit**
+  (`FitTransition`) trims the outgoing clip's end and/or the incoming
+  clip's start by the shortfall, in whole frames, as one edit (the timeline
+  gets shorter, as with any trim).
+- **Short clips / overlapping transitions:** a transition may use at most
+  half of each clip it touches (`TransitionLimit.CLIP_LENGTH`), so the
+  transitions at a clip's two ends never overlap, however short it is.
+- **Overlapping source ranges:** each clip reads only its own file and
+  range. Adjacent clips from the same file (a split, or overlapping ranges)
+  work like any others: the outgoing clip's handle may show frames the
+  incoming clip shows a moment later.
+- **Handle pieces are at least one frame long** (the resolver counts that
+  minimum against the handle), so Media3 never gets an item too short to
+  hold a frame. Where that padding would reach a neighbour's piece (clips a
+  couple of frames long), the padding gives way; what a transition shows
+  never does.
+
+### One definition, two renderers
+
+- **`TransitionLook`** (core) gives, for a frame at timeline time t, each
+  picture's `LayerLook` on each layer: opacity, brightness, a wipe mask, an
+  inverse affine map (canvas fractions, rotation done in pixels so nothing
+  shears), and whether the space outside the moved picture is black or
+  transparent. Every look is defined so the blend is the same whichever
+  picture is on top (tested), because the main track switches pictures at
+  the cut. Layers are opaque (black where the clip's own placement leaves
+  space), except slides, whose vacated space is transparent.
+- **`TransitionComposite`** (core) is the same blend on the CPU, mirroring
+  the shader and the compositor; tests compare the renderer's two-layer
+  composition with it frame by frame.
+- **Render (`CompositionFactory`, preview and export alike):**
+  - Sequence 1 is the main track, unchanged. Each item that takes part in a
+    transition gets a `TransitionStage` after its crop, placement and
+    opacity stages: a custom `GlShaderProgram` drawing
+    `TransitionPlan.mainLook` at each frame's presentation (timeline) time.
+  - Sequence 2 is the handle layer: gaps, and per transition the incoming
+    clip's media before its in-point and the outgoing clip's after its
+    out-point, placed by that clip's transform with its time held at the
+    clip's edge, then a `TransitionStage` drawing `pieceLook`. Video only.
+  - `TransitionCompositorSettings`: canvas-sized output; the handle layer
+    is visible only inside its pieces (its blank gap frames are hidden).
+  - All sequences start at 0, so every per-item effect sees composition
+    time, which is timeline time; looks are pure functions of it (seek,
+    scrub and export agree).
+- **Preview:** `CompositionPlaybackEngine` builds its player with the
+  multiple-input graph. Transition edits reload the composition; transform
+  and keyframe edits still update in place (handle pieces read the same
+  `LiveTransform`s). With transitions the preview tone-maps HDR to SDR with
+  OpenGL, as export does, because the compositor rejects HDR.
+- **Sound** is unchanged by transitions: a hard cut at the cut, in sync.
+
+### Editor
+
+Every cut on the main track has a marker (a circle with + or ⇄); the
+stretch a transition plays over is shaded on the timeline. Tapping a marker
+opens the transition panel (kind, direction, length 0.1–5 s, timing,
+position, Play from just before it, Trim to fit, Remove). A cut and a clip
+are never selected together.
+
+### Storage
+
+Schema v9: an optional `transition` per clip,
+`{type, durationUs, easing, alignment}`. Decoding is lenient: an unknown
+type is a plain cut, the length is clamped to 1 ms–5 s, an unknown easing
+reads as the type's default and an unknown alignment as centred; transitions
+on non-video tracks are ignored.
+
+### Verification
+
+- JVM: resolver window boundaries counted frame by frame at 23.976, 24,
+  25, 29.97, 30, 50, 59.94 and 60 fps with cuts on and off the grid; every
+  alignment; rounding; handles (none, short, photos); half-clip limits and
+  one-frame clips; 3 000 random cuts checked for fit and maximality. Looks:
+  layer-order invariance for every type on every frame; the frames just
+  outside a window equal a plain cut; dissolve proportions; easing; wipe
+  edges in all directions; slides leave no gap or blend; spins cover the
+  canvas and nothing shears at 16:9, 9:16 and 1:1; fade dip. Plan: windows
+  on the timeline grid at 24/25/30/60 fps export; handle pieces' sources;
+  the renderer's two layers composited per output frame equal the reference
+  for every type at 24, 30 and 60 fps and 640×360, 1280×720 and 1080×1920,
+  and for 40 random timelines of random clip lengths. Edits, splits,
+  moves, deletes, Trim to fit and undo/redo; storage round trip, leniency
+  and v8 compatibility.
+- Instrumented (`TransitionExportInstrumentedTest`): exported MP4s decoded
+  frame by frame: dissolves at 30 fps 640×360, 24 fps 320×180 and 60 fps
+  1280×720 (frame before = outgoing, frame after = incoming, every frame
+  inside a blend, in order, with exactly the window's frame count); video
+  handles really play under the main track; wipe edge and slide seam
+  positions against the model; spin corners covered; fade dip; zoom and
+  spin exports. `CompositionPreviewInstrumentedTest.transitionsPlayToTheEnd`:
+  the preview plays and seeks a timeline with a dissolve and a spin.
+
 ## Export (M6)
 
 ```
@@ -841,7 +1018,11 @@ Checked against the Media3 1.11.1 sources and the Transformer guides
 | Recording a voiceover | Not available; import an audio file and move it to the Voiceover track. | Needs microphone capture (and its permission). |
 | Ducking, EQ, noise reduction, audio effects | Not available. | Not in the model yet. |
 | Audio-only projects | Blocked. | Output must have a video track. |
-| Transitions, crossfades | Not available. | No transition model yet; Media3 Compositions don't support crossfading video or audio tracks. |
+| Audio crossfades under a transition | Sound cuts at the cut. | Transitions only blend pictures; the handle layer is silent. A crossfade would need the handle audio mixed with gains, and would change what plays around every cut. |
+| Transitions on extra video tracks or between overlays | Not available. | Only the main track's cuts have transitions. |
+| Transition parameters (wipe softness, zoom factor, spin angle), custom shaders | Fixed (4% soft edge, 2× zoom, half-turn spin). | The model has no per-transition parameters yet. |
+| Sources of different frame rates meeting in a transition | Each frame pairs with the handle frame nearest in time. | Media3's compositor picks the secondary frame with the closest timestamp; with mismatched rates the frame at the cut can pair with a neighbouring handle frame. |
+| HDR footage in transitions on Android 9 and below | Export fails with a processing error. | Media3's compositor rejects HDR input, and OpenGL tone-mapping needs Android 10. |
 | Speed changes | Not available. | Not in the timeline model yet. |
 | Keyframed anchor or fit | Not available. Position, scale, rotation, opacity and crop animate. | The anchor is a pivot (animating it would move the picture), and fit is a choice, not a value. |
 | Volume keyframe curves other than linear and hold | Not available. | `GainKeyframe` stores only those two. |

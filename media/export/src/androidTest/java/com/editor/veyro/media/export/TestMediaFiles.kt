@@ -87,6 +87,14 @@ internal object TestMediaFiles {
         return file
     }
 
+    /** A PNG of one flat grey level, so blends between two of them can be measured exactly. */
+    fun greyPng(file: File, width: Int, height: Int, level: Int): File {
+        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888).apply { eraseColor(Color.rgb(level, level, level)) }
+        file.outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
+        bitmap.recycle()
+        return file
+    }
+
     fun image(file: File, width: Int, height: Int, format: Bitmap.CompressFormat): File {
         val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888).apply { eraseColor(Color.MAGENTA) }
         file.outputStream().use { bitmap.compress(format, 90, it) }
@@ -99,7 +107,7 @@ internal object TestMediaFiles {
      * platform encoder. Every Android device and emulator ships an AVC
      * encoder, so this works everywhere the tests run.
      */
-    fun mp4(file: File, width: Int, height: Int, fps: Int, frameCount: Int, rotationDegrees: Int = 0, marked: Boolean = false): File {
+    fun mp4(file: File, width: Int, height: Int, fps: Int, frameCount: Int, rotationDegrees: Int = 0, marked: Boolean = false, flatLuma: Int? = null): File {
         val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height).apply {
             setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible)
             setInteger(MediaFormat.KEY_BIT_RATE, 1_000_000)
@@ -127,6 +135,8 @@ internal object TestMediaFiles {
                         } else {
                             if (marked) {
                                 fillMarkedFrame(checkNotNull(codec.getInputImage(inIndex)), width, height)
+                            } else if (flatLuma != null) {
+                                fillFlatFrame(checkNotNull(codec.getInputImage(inIndex)), width, height, flatLuma)
                             } else {
                                 fillFrame(checkNotNull(codec.getInputImage(inIndex)), width, height, frame)
                             }
@@ -169,6 +179,20 @@ internal object TestMediaFiles {
             val buffer = plane.buffer
             for (y in 0 until planeHeight) {
                 for (x in 0 until planeWidth) {
+                    buffer.put(y * plane.rowStride + x * plane.pixelStride, value)
+                }
+            }
+        }
+    }
+
+    /** One grey level on every frame (video luma 16..235), neutral chroma. */
+    private fun fillFlatFrame(image: Image, width: Int, height: Int, luma: Int) {
+        image.planes.forEachIndexed { index, plane ->
+            val sub = if (index == 0) 1 else 2
+            val value = (if (index == 0) luma else 128).toByte()
+            val buffer = plane.buffer
+            for (y in 0 until height / sub) {
+                for (x in 0 until width / sub) {
                     buffer.put(y * plane.rowStride + x * plane.pixelStride, value)
                 }
             }

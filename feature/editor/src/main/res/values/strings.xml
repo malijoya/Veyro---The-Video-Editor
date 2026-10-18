@@ -59,7 +59,7 @@
     <string name="editor_close_gaps">Close gaps</string>
     <string name="editor_undo">Undo</string>
     <string name="editor_redo">Redo</string>
-    <string name="editor_edit_hint">Drag the handles to trim. Long-press a clip to move it.</string>
+    <string name="editor_edit_hint">Drag the handles to trim. Long-press a clip to move it. Tap the circle between two video clips for a transition.</string>
     <string name="editor_msg_nothing_to_split">Move the playhead over a clip to split it.</string>
     <string name="editor_msg_split_too_close">Too close to the clip\'s edge to split.</string>
     <string name="editor_msg_no_gaps">This track has no gaps.</string>
@@ -212,4 +212,43 @@
     <string name="easing_ease_in_out">Ease in and out</string>
     <string name="easing_hold">Hold</string>
     <string name="easing_custom">Custom curve</string>
+    <!-- Transitions -->
+    <string name="transition_none">None</string>
+    <string name="transition_hint">Pick a transition for this cut. It plays across the cut without moving any clip or sound.</string>
+    <string name="transition_play">Play</string>
+    <string name="transition_done">Done</string>
+    <string name="transition_length">Length</string>
+    <string name="transition_timing">Timing</string>
+    <string name="transition_alignment">Position</string>
+    <string name="transition_align_center">Centred on the cut</string>
+    <string name="transition_align_before">Ends at the cut</string>
+    <string name="transition_align_after">Starts at the cut</string>
+    <string name="transition_fit">Trim to fit</string>
+    <string name="transition_remove">Remove</string>
+    <string name="transition_status_cut">Plain cut.</string>
+    <plurals name="transition_frames">
+        <item quantity="one">%1$s · %2$d frame</item>
+        <item quantity="other">%1$s · %2$d frames</item>
+    </plurals>
+    <string name="transition_status_shortened_media">Shortened to %1$s: the clips have too little footage past their edges. Trim to fit makes room.</string>
+    <string name="transition_status_shortened_length">Shortened to %1$s: a transition can use at most half of each clip.</string>
+    <string name="transition_status_no_media">Plays as a plain cut: the clips have no footage past their edges. Trim to fit makes room.</string>
+    <string name="transition_status_too_short">Plays as a plain cut: the clips are too short.</string>
+    <string name="transition_fade">Fade</string>
+    <string name="transition_dissolve">Dissolve</string>
+    <string name="transition_wipe">Wipe</string>
+    <string name="transition_slide">Slide</string>
+    <string name="transition_zoom">Zoom</string>
+    <string name="transition_spin">Spin</string>
+    <string name="transition_name_with_direction">%1$s %2$s</string>
+    <string name="transition_direction_left">left</string>
+    <string name="transition_direction_right">right</string>
+    <string name="transition_direction_up">up</string>
+    <string name="transition_direction_down">down</string>
+    <string name="transition_direction_in">in</string>
+    <string name="transition_direction_out">out</string>
+    <string name="transition_direction_clockwise">clockwise</string>
+    <string name="transition_direction_counterclockwise">counter-clockwise</string>
+    <string name="transition_a11y_add">Cut at %1$s, no transition. Add a transition</string>
+    <string name="transition_a11y_marker">%1$s at the cut at %2$s. Edit transition</string>
 </resources>

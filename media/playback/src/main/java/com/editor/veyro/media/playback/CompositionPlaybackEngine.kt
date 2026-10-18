@@ -37,6 +37,9 @@ import com.editor.veyro.media.render.transform.LiveTransform
  *   way. This uses CompositionPlayer's replayable frame cache
  *   (experimental in Media3 1.11). If a redraw isn't possible, the change
  *   shows on the next frame played or the next reload.
+ * - Transitions play from the same composition as export (a second, handle
+ *   sequence composited under the main one), so the player uses Media3's
+ *   multiple-input video graph. A transition edit reloads the composition.
  */
 @OptIn(UnstableApi::class, ExperimentalApi::class)
 public class CompositionPlaybackEngine(context: Context) : PlaybackEngine {
@@ -53,6 +56,8 @@ public class CompositionPlaybackEngine(context: Context) : PlaybackEngine {
         )
         // Keeps the last frames so a paused preview can redraw them with new transforms.
         .experimentalSetEnableReplayableCache(true)
+        // Transitions add a second picture sequence; the default graph composites only one.
+        .setVideoGraphFactory(CompositionFactory.previewVideoGraphFactory())
         .build()
 
     private var listener: (() -> Unit)? = null

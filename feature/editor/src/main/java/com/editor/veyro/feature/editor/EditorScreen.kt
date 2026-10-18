@@ -18,6 +18,8 @@ import com.editor.veyro.feature.editor.overlay.PictureEditing
 import com.editor.veyro.feature.editor.overlay.StickerSheet
 import com.editor.veyro.feature.editor.keyframe.KeyframeActions
 import com.editor.veyro.feature.editor.keyframe.PlacementKeyframeBar
+import com.editor.veyro.feature.editor.transition.TransitionActions
+import com.editor.veyro.feature.editor.transition.TransitionControls
 import com.editor.veyro.feature.editor.transform.TransformActions
 import com.editor.veyro.feature.editor.transform.TransformControls
 import com.editor.veyro.feature.editor.transform.TransformTab
@@ -98,11 +100,15 @@ import com.editor.veyro.feature.editor.timeline.TimelineMetrics
 import com.editor.veyro.feature.editor.timeline.TimelineView
 import com.editor.veyro.feature.editor.timeline.TimelineViewportState
 import com.editor.veyro.feature.editor.timeline.rememberTimelineViewportState
+import com.editor.veyro.core.model.transition.Transition
 import com.editor.veyro.media.playback.PreviewController
 import com.editor.veyro.media.playback.PreviewState
 import com.editor.veyro.media.playback.PreviewStatus
 import com.editor.veyro.media.playback.ui.BindPreviewLifecycle
 import com.editor.veyro.media.playback.ui.PreviewSurface
+
+/** "Play" in the transition panel starts this long before the transition. */
+private const val TRANSITION_PREROLL_US = 1_000_000L
 
 /** Minimum time between seeks while scrubbing. Fast enough to feel live, without saturating the decoder. */
 private const val SCRUB_SEEK_INTERVAL_MS = 80L
@@ -211,6 +217,17 @@ public fun EditorRoute(viewModel: EditorViewModel, onBack: () -> Unit, onExport:
                 }
             },
             onClearGainKeyframes = viewModel::clearGainKeyframes,
+            onSelectCut = { id ->
+                viewModel.controller.pause()
+                viewModel.selectCut(id)
+            },
+            onSetTransition = viewModel::setTransition,
+            onFitTransition = viewModel::fitTransition,
+            onPlayFrom = { timeUs ->
+                viewport.scrollToTime(timeUs)
+                viewModel.controller.seekTo(timeUs)
+                viewModel.controller.play()
+            },
         ),
     )
 }
@@ -255,6 +272,10 @@ internal class EditActions(
     val onGainKeyframeCurve: (ClipId, GainInterpolation) -> Unit = { _, _ -> },
     val onNudgeGainKeyframe: (ClipId, Int) -> Unit = { _, _ -> },
     val onClearGainKeyframes: (ClipId) -> Unit = {},
+    val onSelectCut: (ClipId?) -> Unit = {},
+    val onSetTransition: (ClipId, Transition?) -> Unit = { _, _ -> },
+    val onFitTransition: (ClipId) -> Unit = {},
+    val onPlayFrom: (Long) -> Unit = {},
 )
 
 /**
@@ -500,6 +521,9 @@ private fun EditorContent(
                 onDragEnd = editActions.onDragEnd,
                 onDragCancel = editActions.onDragCancel,
                 onToggleTrackMute = { track -> editActions.onSetTrackAudio(track.id, track.audio.copy(muted = !track.audio.muted)) },
+                cuts = state.cuts,
+                selectedCutId = state.selectedCut?.outgoingClipId,
+                onSelectCut = { id -> editActions.onSelectCut(id) },
             )
         }
         EditToolbar(
@@ -752,9 +776,22 @@ private fun SelectionBar(
     val picture = shownPicture
     // The sound panel opens on demand, so the preview keeps its room on small screens.
     var soundOpen by rememberSaveable { mutableStateOf(false) }
+    val cut = state.selectedCut
     Surface(color = MaterialTheme.colorScheme.surfaceContainer, modifier = Modifier.fillMaxWidth()) {
         Column(Modifier.padding(horizontal = Layout.screenGutter, vertical = Spacing.sm)) {
-            if (clip == null) {
+            if (cut != null) {
+                TransitionControls(
+                    cut = cut,
+                    enabled = !state.isDragging,
+                    actions = TransitionActions(
+                        onSet = { actions.onSetTransition(cut.outgoingClipId, it) },
+                        onFit = { actions.onFitTransition(cut.outgoingClipId) },
+                        // From a second before, so the transition is seen coming in.
+                        onPlay = { actions.onPlayFrom((cut.startUs - TRANSITION_PREROLL_US).coerceAtLeast(0)) },
+                        onClose = { actions.onSelectCut(null) },
+                    ),
+                )
+            } else if (clip == null) {
                 Text(
                     stringResource(R.string.editor_select_hint) + " " + stringResource(R.string.editor_edit_hint),
                     style = MaterialTheme.typography.bodySmall,
@@ -884,7 +921,7 @@ private fun SelectionBar(
                     )
                 }
             }
-            if (!compact && overlay == null && transformTab == null) {
+            if (!compact && overlay == null && transformTab == null && cut == null) {
                 FlowRow(
                     horizontalArrangement = Arrangement.spacedBy(Spacing.sm),
                     verticalArrangement = Arrangement.spacedBy(Spacing.xs),
